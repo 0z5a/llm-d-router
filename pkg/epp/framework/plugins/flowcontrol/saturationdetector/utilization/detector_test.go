@@ -34,7 +34,7 @@ import (
 
 func makePodMetric(name string, queueDepth int, kvUsage float64, updateTime time.Time) fwkdl.Endpoint {
 	meta := &fwkdl.EndpointMetadata{
-		NamespacedName: types.NamespacedName{Name: name, Namespace: "ns1"},
+		ID: types.NamespacedName{Name: name, Namespace: "ns1"},
 	}
 	metrics := fwkdl.NewMetrics()
 	metrics.WaitingQueueSize = queueDepth
@@ -50,7 +50,7 @@ func makeSchedulingEndpoint(
 	updateTime time.Time,
 ) fwksched.Endpoint {
 	meta := &fwkdl.EndpointMetadata{
-		NamespacedName: types.NamespacedName{Name: name, Namespace: "ns1"},
+		ID: types.NamespacedName{Name: name, Namespace: "ns1"},
 	}
 	metrics := fwkdl.NewMetrics()
 	metrics.WaitingQueueSize = queueDepth
@@ -205,7 +205,7 @@ func TestDetector_Saturation(t *testing.T) {
 			name: "Single pod with nil metrics",
 			pods: []fwkdl.Endpoint{
 				fwkdl.NewEndpoint(&fwkdl.EndpointMetadata{
-					NamespacedName: types.NamespacedName{Name: "pod1", Namespace: "ns1"},
+					ID: types.NamespacedName{Name: "pod1", Namespace: "ns1"},
 				}, nil),
 			},
 			wantSaturation: 1.0,

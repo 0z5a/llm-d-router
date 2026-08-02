@@ -68,9 +68,9 @@ func TestSchedulePlugins(t *testing.T) {
 				WithScorers(NewWeightedScorer(tp1, 1), NewWeightedScorer(tp2, 1)).
 				WithPicker(pickerPlugin),
 			input: []fwksched.Endpoint{
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
 			},
 			wantTargetEndpoint:  k8stypes.NamespacedName{Name: "pod1"},
 			targetEndpointScore: 1.1,
@@ -84,9 +84,9 @@ func TestSchedulePlugins(t *testing.T) {
 				WithScorers(NewWeightedScorer(tp1, 60), NewWeightedScorer(tp2, 40)).
 				WithPicker(pickerPlugin),
 			input: []fwksched.Endpoint{
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
 			},
 			wantTargetEndpoint:  k8stypes.NamespacedName{Name: "pod1"},
 			targetEndpointScore: 50,
@@ -100,9 +100,9 @@ func TestSchedulePlugins(t *testing.T) {
 				WithScorers(NewWeightedScorer(tp1, 1), NewWeightedScorer(tp2, 1)).
 				WithPicker(pickerPlugin),
 			input: []fwksched.Endpoint{
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
-				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
+				fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
 			},
 			numEndpointsToScore: 0,
 			err:                 true, // no available endpoints to server after filter all
@@ -140,7 +140,7 @@ func TestSchedulePlugins(t *testing.T) {
 			// Validate output
 			wantRes := &fwksched.ProfileRunResult{
 				TargetEndpoints: []fwksched.Endpoint{
-					fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: test.wantTargetEndpoint}, nil, nil),
+					fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: test.wantTargetEndpoint}, nil, nil),
 				},
 			}
 
@@ -277,7 +277,7 @@ func (tp *testPlugin) Pick(_ context.Context, scoredEndpoints []*fwksched.Scored
 
 	winnerEndpoints := []fwksched.Endpoint{}
 	for _, scoredEndpoint := range scoredEndpoints {
-		if scoredEndpoint.GetMetadata().NamespacedName.String() == tp.PickRes.String() {
+		if scoredEndpoint.GetMetadata().ID.String() == tp.PickRes.String() {
 			winnerEndpoints = append(winnerEndpoints, scoredEndpoint.Endpoint)
 			tp.WinnerEndpointScore = scoredEndpoint.Score
 		}
@@ -444,7 +444,7 @@ func TestRunWithOutOfRangeScores(t *testing.T) {
 		WithPicker(pickerPlugin)
 
 	input := []fwksched.Endpoint{
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
 	}
 
 	request := &fwksched.InferenceRequest{
@@ -495,8 +495,8 @@ func TestFilterExecutionOrder(t *testing.T) {
 		WithPicker(pickerPlugin)
 
 	input := []fwksched.Endpoint{
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
 	}
 
 	request := &fwksched.InferenceRequest{
@@ -540,7 +540,7 @@ func TestFilterExecutionOrderViaAddPlugins(t *testing.T) {
 	profile.WithPicker(pickerPlugin)
 
 	input := []fwksched.Endpoint{
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
 	}
 
 	request := &fwksched.InferenceRequest{
@@ -590,9 +590,9 @@ func TestFilterChainReceivesPreviousOutput(t *testing.T) {
 		WithPicker(pickerPlugin)
 
 	input := []fwksched.Endpoint{
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
-		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod1"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod2"}}, nil, nil),
+		fwksched.NewEndpoint(&fwkdl.EndpointMetadata{ID: k8stypes.NamespacedName{Name: "pod3"}}, nil, nil),
 	}
 
 	request := &fwksched.InferenceRequest{
@@ -658,7 +658,7 @@ func findEndpoints(endpoints []fwksched.Endpoint, names ...k8stypes.NamespacedNa
 	res := []fwksched.Endpoint{}
 	for _, endpoint := range endpoints {
 		for _, name := range names {
-			if endpoint.GetMetadata().NamespacedName.String() == name.String() {
+			if endpoint.GetMetadata().ID.String() == name.String() {
 				res = append(res, endpoint)
 			}
 		}
