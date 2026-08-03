@@ -419,8 +419,6 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			return status.Errorf(codes.Unknown, "cannot receive stream request: %v", recvErr)
 		}
 
-		reqCtx.Request.Metadata = envoy.ExtractMetadataValues(req)
-
 		switch v := req.Request.(type) {
 		case *extProcPb.ProcessingRequest_RequestHeaders:
 			requestID := envoy.ExtractHeaderValue(v, reqcommon.RequestIDHeaderKey)
@@ -452,6 +450,7 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			// Message is buffered, we can read and decode.
 			if v.RequestBody.EndOfStream {
 				loggerTrace.Info("decoding")
+				reqCtx.Request.Metadata = envoy.ExtractMetadataValues(req)
 				reqCtx.Request.RawBody = make([]byte, buf.Len())
 				copy(reqCtx.Request.RawBody, buf.Bytes())
 
@@ -507,6 +506,10 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 		case *extProcPb.ProcessingRequest_RequestTrailers:
 			// This is currently unused.
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
+			// Overwrites the request-phase value on purpose. Response-received plugins
+			// read this through Response.ReqMetadata to learn which endpoint actually
+			// served the request, and Envoy only reports that at the response phase.
+			reqCtx.Request.Metadata = envoy.ExtractMetadataValues(req)
 			respHeadersReceivedAt := time.Now()
 			for _, header := range v.ResponseHeaders.Headers.GetHeaders() {
 				value := string(header.RawValue)

@@ -530,10 +530,7 @@ func (d *Director) HandleResponseHeader(ctx context.Context, reqCtx *handlers.Re
 // plugins run synchronously because they may produce DynamicMetadata that must be attached
 // to the ext_proc response sent back to Envoy.
 func (d *Director) HandleResponseBody(ctx context.Context, reqCtx *handlers.RequestContext, endOfStream bool) *handlers.RequestContext {
-	logger := log.FromContext(ctx).WithValues("stage", "bodyChunk")
-	logger.V(logutil.TRACE).Info("Entering HandleResponseBodyChunk")
 	if len(d.requestControlPlugins.responseStreamingPlugins) == 0 {
-		logger.V(logutil.TRACE).Info("Exiting HandleResponseBodyChunk")
 		return reqCtx
 	}
 
@@ -546,7 +543,6 @@ func (d *Director) HandleResponseBody(ctx context.Context, reqCtx *handlers.Requ
 		EndOfStream:   endOfStream,
 		Usage:         reqCtx.Usage,
 	}
-	requestID := reqCtx.Request.Headers[reqcommon.RequestIDHeaderKey]
 
 	if endOfStream {
 		// Drain the async queue: close the channel and wait for the goroutine to finish
@@ -568,10 +564,12 @@ func (d *Director) HandleResponseBody(ctx context.Context, reqCtx *handlers.Requ
 		}
 		q := d.loadOrCreateResponseBodyQueue(reqCtx)
 		if !q.enqueue(work) {
-			logger.V(logutil.DEBUG).Info("Skipping response body chunk because the async queue is closed", "requestID", requestID)
+			// Built here rather than at function entry: this path is per-chunk, and
+			// deriving a logger allocates whether or not anything is emitted.
+			log.FromContext(ctx).V(logutil.DEBUG).Info("Skipping response body chunk because the async queue is closed",
+				"stage", "bodyChunk", "requestID", reqCtx.Request.Headers[reqcommon.RequestIDHeaderKey])
 		}
 	}
-	logger.V(logutil.TRACE).Info("Exiting HandleResponseBodyChunk")
 	return reqCtx
 }
 
@@ -674,11 +672,19 @@ func (d *Director) runResponseHeaderPlugins(ctx context.Context, request *fwksch
 func (d *Director) runResponseBodyPlugins(ctx context.Context, request *fwksched.InferenceRequest, response *fwkrc.Response, targetEndpoint *fwkdl.EndpointMetadata) {
 	loggerTrace := log.FromContext(ctx).V(logutil.TRACE)
 	for _, plugin := range d.requestControlPlugins.responseStreamingPlugins {
-		loggerTrace.Info("Running ResponseStreaming plugin", "plugin", plugin.TypedName())
+		// This loop runs per response chunk, so unlike the other plugin runners it
+		// caches TypedName and guards the log calls: passing arguments to a
+		// disabled logger still boxes them into a heap-allocated slice.
+		name := plugin.TypedName()
+		if loggerTrace.Enabled() {
+			loggerTrace.Info("Running ResponseStreaming plugin", "plugin", name)
+		}
 		before := time.Now()
 		plugin.ResponseBody(ctx, request, response, targetEndpoint)
-		metrics.RecordPluginProcessingLatency(fwkrc.ResponseStreamingExtensionPoint, plugin.TypedName().Type, plugin.TypedName().Name, time.Since(before))
-		loggerTrace.Info("Completed running ResponseStreaming plugin successfully", "plugin", plugin.TypedName())
+		metrics.RecordPluginProcessingLatency(fwkrc.ResponseStreamingExtensionPoint, name.Type, name.Name, time.Since(before))
+		if loggerTrace.Enabled() {
+			loggerTrace.Info("Completed running ResponseStreaming plugin successfully", "plugin", name)
+		}
 	}
 }
 
