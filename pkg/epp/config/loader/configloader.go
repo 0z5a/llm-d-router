@@ -154,7 +154,7 @@ func InstantiateAndConfigure(
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 
-	if err := instantiatePlugins(rawConfig.Plugins, handle); err != nil {
+	if err := instantiatePlugins(rawConfig.Plugins, handle, logger); err != nil {
 		return nil, fmt.Errorf("plugin instantiation failed: %w", err)
 	}
 
@@ -172,17 +172,17 @@ func InstantiateAndConfigure(
 		return nil, fmt.Errorf("scheduler config build failed: %w", err)
 	}
 
-	featureGates, err := loadFeatureConfig(rawConfig.FeatureGates)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load feature gates: %w", err)
-	}
-
 	dataConfig, err := buildDataLayerConfig(rawConfig.DataLayer, handle)
 	if err != nil {
 		return nil, fmt.Errorf("data layer config build failed: %w", err)
 	}
 	if len(dataConfig.Sources) == 0 {
 		logger.Info("No data sources configured; metrics collection is disabled")
+	}
+
+	featureGates, err := loadFeatureConfig(rawConfig.FeatureGates)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load feature gates: %w", err)
 	}
 
 	var flowControlConfig *flowcontrol.Config
@@ -226,13 +226,18 @@ func decodeRawConfig(configBytes []byte) (*configapi.EndpointPickerConfig, error
 	return cfg, nil
 }
 
-func instantiatePlugins(configuredPlugins []configapi.PluginSpec, handle fwkplugin.Handle) error {
+func instantiatePlugins(configuredPlugins []configapi.PluginSpec, handle fwkplugin.Handle, logger logr.Logger) error {
 	orderedPlugins, err := buildPluginDAG(configuredPlugins, handle)
 	if err != nil {
 		return fmt.Errorf("failed to build plugin dependency graph: %w", err)
 	}
 
 	for _, spec := range orderedPlugins {
+
+		if meta, ok := fwkplugin.RegistryMetadata[spec.Type]; ok && meta.Deprecated {
+			logger.Info("DEPRECATION warning: plugin is deprecated", "plugin", spec.Name, "type", spec.Type)
+		}
+
 		factory := fwkplugin.Registry[spec.Type]
 		plugin, err := factory(spec.Name, fwkplugin.StrictDecoder(spec.Parameters), handle)
 		if err != nil {

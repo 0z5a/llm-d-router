@@ -121,6 +121,8 @@ type Options struct {
 	ConfigFile string // The path to the configuration file.
 	ConfigText string // The configuration specified as text, in lieu of a file.
 
+	AllowExperimentalPlugins bool // Allows loading of experimental Alpha plugins.
+
 	// internal
 	fs                  *pflag.FlagSet // FlagSet used in AddFlags() and consulted in Validate()
 	endpointSelectorStr string         // Raw string from --endpoint-selector flag, parsed to EndpointSelector in Complete()
@@ -234,6 +236,8 @@ func (opts *Options) AddFlags(fs *pflag.FlagSet) {
 		"Directory with the metrics server certificates. Enables TLS on the metrics endpoint.")
 	fs.StringVar(&opts.ConfigFile, "config-file", opts.ConfigFile, "The path to the configuration file.")
 	fs.StringVar(&opts.ConfigText, "config-text", opts.ConfigText, "The configuration specified as text, in lieu of a file.")
+	fs.BoolVar(&opts.AllowExperimentalPlugins, "allow-experimental-plugins", opts.AllowExperimentalPlugins,
+		"Allows loading of experimental Alpha plugins.")
 }
 
 func (opts *Options) Complete() error {
