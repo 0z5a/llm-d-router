@@ -154,11 +154,8 @@ kind: EndpointPickerConfig
 plugins:
 - type: precise-prefix-cache-producer
   parameters:
-    indexerConfig:
-      tokenProcessorConfig:
-        blockSize: 5
-      kvBlockIndexConfig:
-        maxPrefixBlocksToMatch: 256
+    tokenProcessorConfig:
+      blockSizeTokens: 5
 - type: prefix-cache-scorer
   parameters:
     prefixMatchInfoProducerName: precise-prefix-cache-producer
