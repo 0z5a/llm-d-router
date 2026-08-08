@@ -249,14 +249,14 @@ func requestSpreadFraction(requestID string) float64 {
 // PreRequest sets routing.KVCacheSourceHeader to the best-match peer stashed
 // by Produce when it out-caches the pod computing the prefix by at least
 // minCachedTokenDelta tokens. Any inbound value of the header is removed.
-func (p *Producer) PreRequest(ctx context.Context, request *scheduling.InferenceRequest, schedulingResult *scheduling.SchedulingResult) {
+func (p *Producer) PreRequest(ctx context.Context, request *scheduling.InferenceRequest, schedulingResult *scheduling.SchedulingResult) error {
 	logger := log.FromContext(ctx).WithName(p.typedName.String()).V(logging.TRACE)
 	delete(request.Headers, routing.KVCacheSourceHeader)
 
 	best, ok := scheduling.ReadRequestAttribute[*bestMatchPeer](request, p.attrKey())
 	if !ok {
 		logger.Info("no best-match peer stashed", "requestID", request.RequestID)
-		return
+		return nil
 	}
 
 	computing := schedulingResult.ProfileResults[schedulingResult.PrimaryProfileName]
@@ -264,12 +264,12 @@ func (p *Producer) PreRequest(ctx context.Context, request *scheduling.Inference
 		computing = pr
 	}
 	if computing == nil || len(computing.TargetEndpoints) == 0 {
-		return
+		return nil
 	}
 	endpoint := computing.TargetEndpoints[0]
 	md := endpoint.GetMetadata()
 	if md == nil {
-		return
+		return nil
 	}
 	computingHostPort := net.JoinHostPort(md.Address, md.Port)
 	computingCached := p.cachedTokenCount(endpoint)
@@ -280,10 +280,10 @@ func (p *Producer) PreRequest(ctx context.Context, request *scheduling.Inference
 	// with the delta check below while minCachedTokenDelta >= 1 (a self-match
 	// is delta 0), but explicit against a future lower floor.
 	if best.hostPort == computingHostPort {
-		return
+		return nil
 	}
 	if best.cachedTokens-computingCached < p.minCachedTokenDelta {
-		return
+		return nil
 	}
 
 	if request.Headers == nil {
@@ -291,6 +291,7 @@ func (p *Producer) PreRequest(ctx context.Context, request *scheduling.Inference
 	}
 	request.Headers[routing.KVCacheSourceHeader] = best.hostPort
 	logger.Info("set KV cache source header", "requestID", request.RequestID, "value", best.hostPort)
+	return nil
 }
 
 // cpuDeviceTier is the CachedBlocksByTier key for the CPU tier (device tiers
