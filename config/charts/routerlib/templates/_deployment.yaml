@@ -12,6 +12,10 @@
       serviceAccountName: {{ include "llm-d-router.name" . }}
       # Conservatively, this timeout should mirror the longest grace period of the pods within the pool
       terminationGracePeriodSeconds: 130
+      {{- if and .Values.router.tokenizer.enabled .Values.router.tokenizer.initContainers }}
+      initContainers:
+        {{- toYaml .Values.router.tokenizer.initContainers | nindent 8 }}
+      {{- end }}
       containers:
       {{- if $proxySidecar }}
         - name: {{ $proxy.name }}
@@ -223,6 +227,9 @@
             - {{ $tokenizer.modelName | quote }}
             - {{ printf "--port=%d" $renderPort | quote }}
           {{- end }}
+          {{- with $tokenizer.extraArgs }}
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: render-http
               containerPort: {{ $renderPort }}
@@ -253,6 +260,9 @@
       {{- if .Values.router.tokenizer.enabled }}
         - name: model-cache
           emptyDir: {}
+        {{- with .Values.router.tokenizer.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       {{- if and $proxySidecar (eq $proxyType "agentgateway") $proxyConfigMapName }}
         - name: agentgateway-config-template
