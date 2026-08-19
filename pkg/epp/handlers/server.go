@@ -137,6 +137,7 @@ type RequestContext struct {
 	RequestSize                int
 	Usage                      fwkrh.Usage
 	ResponseSize               int
+	StreamedEvents             int
 	ResponseBodyStarted        bool
 	ResponseComplete           bool
 	ResponseStatusCode         string
