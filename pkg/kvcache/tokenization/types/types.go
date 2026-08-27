@@ -27,11 +27,24 @@ type ImageBlock struct {
 	URL string `json:"url,omitempty"`
 }
 
+// AudioBlock represents audio data in a multimodal content block.
+type AudioBlock struct {
+	Data   string `json:"data,omitempty"`
+	Format string `json:"format,omitempty"`
+}
+
+// AudioURLBlock represents the audio_url field in a multimodal content block.
+type AudioURLBlock struct {
+	URL string `json:"url,omitempty"`
+}
+
 // ContentBlock represents a single part of a multimodal message.
 type ContentBlock struct {
-	Type     string     `json:"type"`
-	Text     string     `json:"text,omitempty"`
-	ImageURL ImageBlock `json:"image_url,omitempty"`
+	Type       string        `json:"type"`
+	Text       string        `json:"text,omitempty"`
+	ImageURL   ImageBlock    `json:"image_url,omitempty"`
+	AudioURL   AudioURLBlock `json:"audio_url,omitempty"`
+	InputAudio AudioBlock    `json:"input_audio,omitempty"`
 }
 
 // Content holds a message's content — either plain text or a list of multimodal blocks.
@@ -76,6 +89,12 @@ func (c Content) PlainText() string {
 		if block.Type == "text" {
 			sb.WriteString(block.Text)
 			sb.WriteString(" ")
+		} else if block.Type == "audio_url" || block.Type == "input_audio" || block.Type == "audio" {
+			// Include audio URL or placeholder for prefix caching
+			if block.AudioURL.URL != "" {
+				sb.WriteString(block.AudioURL.URL)
+				sb.WriteString(" ")
+			}
 		}
 	}
 	return sb.String()
