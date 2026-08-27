@@ -339,15 +339,6 @@ func appendMMAsset(out []byte, features []fwkrh.MultiModalFeature, modality fwkr
 	return out, features
 }
 
-// assetPlaceholderCount derives a deterministic placeholder count (>= 1) from an
-// asset's byte length for modalities without a dedicated estimator.
-func assetPlaceholderCount(dataLen int) int {
-	if n := (dataLen + bytesPerToken - 1) / bytesPerToken; n > 0 {
-		return n
-	}
-	return 1
-}
-
 // packBytes packs bytes into little-endian uint32 tokens (zero-padded tail).
 // Reinterpreting them reproduces the input, so locality keys are unchanged.
 func packBytes(raw []byte) []uint32 {
