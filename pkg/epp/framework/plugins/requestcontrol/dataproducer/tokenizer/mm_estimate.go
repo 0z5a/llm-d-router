@@ -359,8 +359,8 @@ const (
 	audioModeDynamic = "dynamic"
 	audioModeStatic  = "static"
 
-	defaultAudioDuration        = 10  // seconds
-	audioTokensPerSecond        = 25  // placeholder tokens per second
+	defaultAudioDuration        = 10   // seconds
+	audioTokensPerSecond        = 25   // placeholder tokens per second
 	audioBytesPerSecondEstimate = 8000 // compressed audio bytes/sec (OGG ~1500, MP3 ~16000)
 )
 
