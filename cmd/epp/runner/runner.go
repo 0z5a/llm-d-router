@@ -827,7 +827,7 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 	}
 
 	// The plugins will be executed in topologically sorted order to ensure that data is produced before it is consumed.
-	r.requestControlConfig.OrderDataProducerPlugins(dag)
+	r.requestControlConfig.OrderPlugins(dag)
 
 	// Derive the endpoint-scope allowed-key sets while the full plugin set,
 	// including auto-created producers, is known. A plugin missing here is
