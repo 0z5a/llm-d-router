@@ -58,6 +58,37 @@ const (
 // pre-marshaled chat message (multimodal parts).
 var arrayContentMarker = []byte(`"content":[`)
 
+// authHeaderCtxKey carries the inbound request's Authorization header from
+// Plugin.Produce to the render call without widening tokenInputProducer.produce.
+type authHeaderCtxKey struct{}
+
+// withAuthHeader returns ctx carrying the Authorization header value verbatim.
+func withAuthHeader(ctx context.Context, value string) context.Context {
+	return context.WithValue(ctx, authHeaderCtxKey{}, value)
+}
+
+// authHeaderFromContext returns the Authorization header value on ctx, or "".
+func authHeaderFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(authHeaderCtxKey{}).(string)
+	return value
+}
+
+// renderStatusError is a non-2xx response from the render endpoint.
+type renderStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *renderStatusError) Error() string {
+	return fmt.Sprintf("vLLM render returned status %d: %s", e.StatusCode, e.Body)
+}
+
+// isRenderAuthError reports whether err carries a 401 or 403 render response.
+func isRenderAuthError(err error) bool {
+	var se *renderStatusError
+	return errors.As(err, &se) && (se.StatusCode == http.StatusUnauthorized || se.StatusCode == http.StatusForbidden)
+}
+
 // vllmConfig configures the vLLM /render backend. Future protocol fields
 // (e.g., grpc) can be added alongside url.
 type vllmConfig struct {
@@ -415,6 +446,11 @@ func (r *vllmHTTPRenderer) postJSON(ctx context.Context, path string, body any, 
 		return fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// The render endpoint may require the same credential as inference;
+	// forward the inbound Authorization when present.
+	if auth := authHeaderFromContext(ctx); auth != "" {
+		httpReq.Header.Set("Authorization", auth)
+	}
 
 	httpResp, err := r.client.Do(httpReq)
 	if err != nil {
@@ -424,7 +460,7 @@ func (r *vllmHTTPRenderer) postJSON(ctx context.Context, path string, body any, 
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBodySnippetBytes))
-		return fmt.Errorf("vLLM render returned status %d: %s", httpResp.StatusCode, string(snippet))
+		return &renderStatusError{StatusCode: httpResp.StatusCode, Body: string(snippet)}
 	}
 	if err := json.NewDecoder(httpResp.Body).Decode(out); err != nil {
 		return fmt.Errorf("unmarshal response: %w", err)
