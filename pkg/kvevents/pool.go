@@ -571,8 +571,11 @@ func (p *Pool) processEventBatch(ctx context.Context, batch *EventBatch, podIden
 						ev.KVCacheSpecKind = KVCacheSpecKind(meta.Kind)
 					}
 				} else {
+					// Auxiliary events can arrive first after a restart. Allow the
+					// canonical stream to replace their learned block size.
 					if meta, found := p.groupCatalog.Get(podIdentifier, g); found &&
-						meta.Kind == string(ev.KVCacheSpecKind) && meta.BlockSize != ev.BlockSize {
+						meta.Kind == string(ev.KVCacheSpecKind) && meta.BlockSize != ev.BlockSize &&
+						ev.BlockSize != p.tokenProcessor.BlockSize() {
 						metrics.KVEventStoresSkipped.WithLabelValues(
 							cacheKindLabel(ev.KVCacheSpecKind), "conflicting_block_size").Inc()
 						log.FromContext(ctx).V(logging.TRACE).Info("Skipping KV cache store event",
