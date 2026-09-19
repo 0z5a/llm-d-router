@@ -2017,6 +2017,8 @@ func TestOpenAIParser_Claims(t *testing.T) {
 			completionsAPI + "/render",
 			imagesGenerationsAPI,
 			imagesEditsAPI,
+			videosAPI,
+			videosSyncAPI,
 			audioSpeechAPI,
 		},
 		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},

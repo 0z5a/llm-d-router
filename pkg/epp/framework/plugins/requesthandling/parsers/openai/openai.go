@@ -24,11 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"strconv"
 	"strings"
 
+	"k8s.io/utils/ptr"
 	v1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/common/request"
@@ -52,6 +54,12 @@ const (
 	// imagesEditsAPI is the OpenAI-compatible image edit (image-to-image) endpoint.
 	// Requests are multipart/form-data.
 	imagesEditsAPI = "images/edits"
+	// videosAPI is the OpenAI-compatible vLLM-Omni asynchronous video generation
+	// endpoint. Requests are multipart/form-data.
+	videosAPI = "videos"
+	// videosSyncAPI is the vLLM-Omni synchronous video generation endpoint, which
+	// takes the same form as videosAPI and returns raw video bytes.
+	videosSyncAPI  = "videos/sync"
 	audioSpeechAPI = "audio/speech"
 
 	streamingRespPrefix = "data: "
@@ -119,6 +127,8 @@ func (p *OpenAIParser) Claims() fwkrh.Claims {
 			completionsAPI + "/render",
 			imagesGenerationsAPI,
 			imagesEditsAPI,
+			videosAPI,
+			videosSyncAPI,
 			audioSpeechAPI,
 		},
 		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},
@@ -143,6 +153,9 @@ func (p *OpenAIParser) ParseRequest(ctx context.Context, body []byte, headers ma
 	apiType := determineAPITypeFromPath(path)
 	if apiType == imagesEditsAPI {
 		return parseImagesEditsRequest(body, headers)
+	}
+	if apiType == videosAPI || apiType == videosSyncAPI {
+		return parseVideosRequest(body, headers)
 	}
 	extractedBody, err := extractRequestBody(apiType, body)
 	if err != nil {
@@ -356,6 +369,14 @@ func determineAPITypeFromPath(path string) string {
 	if request.MatchPathSuffix(path, "/images/edits") {
 		return imagesEditsAPI
 	}
+	// videos/sync ends with /videos as well, so the sync suffix is compared
+	// before the async one for the sync path to resolve to its own API type.
+	if request.MatchPathSuffix(path, "/"+videosSyncAPI) {
+		return videosSyncAPI
+	}
+	if request.MatchPathSuffix(path, "/"+videosAPI) {
+		return videosAPI
+	}
 	if request.MatchPathSuffix(path, "/audio/speech") {
 		return audioSpeechAPI
 	}
@@ -517,6 +538,153 @@ func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.Par
 		return nil, errors.New("invalid images edits request: must have prompt field")
 	}
 	return &fwkrh.ParseResult{Body: extractedBody, SkipResponseProcessing: false}, nil
+}
+
+// Bounds the pinned vLLM-Omni form and model declare on the video endpoints.
+// Values outside them are rejected here so a malformed request fails at the
+// router with the backend's own range rather than being silently clamped or
+// zeroed into the scheduling cost fields.
+const (
+	minVideoSteps = 1
+	maxVideoSteps = 200
+	minVideoN     = 1
+	maxVideoN     = 10
+)
+
+// parseVideosRequest parses a multipart/form-data /v1/videos or /v1/videos/sync
+// request. Only scheduler-relevant scalar fields are read; the media parts and
+// the JSON-encoded reference fields stay in Payload, which remains the original
+// bytes so the forwarded body is byte-identical to what the client sent.
+func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseResult, error) {
+	contentTypeValue, _ := headerValue(headers, contentType)
+	mediaType, params, err := mime.ParseMediaType(contentTypeValue)
+	if err != nil || mediaType != "multipart/form-data" {
+		return nil, errors.New("videos request must have a multipart/form-data content-type")
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return nil, errors.New("videos request: content-type is missing the multipart boundary")
+	}
+
+	videos := &fwkrh.VideoGenerationRequest{NumOutputsPerPrompt: ptr.To[int64](1)}
+	extractedBody := &fwkrh.InferenceRequestBody{
+		Videos:  videos,
+		Payload: fwkrh.RawPayload(body),
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading videos multipart body: %w", err)
+		}
+		// File parts carry the reference media. They are neither interpreted nor
+		// retained, so drain them straight to io.Discard: reading the part into a
+		// buffer would hold a whole reference video in memory for nothing.
+		if part.FileName() != "" {
+			if _, err := io.Copy(io.Discard, part); err != nil {
+				return nil, fmt.Errorf("error reading videos file part %q: %w", part.FormName(), err)
+			}
+			continue
+		}
+		value, err := io.ReadAll(part)
+		if err != nil {
+			return nil, fmt.Errorf("error reading videos form field %q: %w", part.FormName(), err)
+		}
+		switch part.FormName() {
+		case "model":
+			extractedBody.Model = string(value)
+		case "prompt":
+			videos.Prompt = string(value)
+		case "negative_prompt":
+			videos.NegativePrompt = string(value)
+		case "size":
+			videos.Size = string(value)
+		case "seconds":
+			videos.Seconds = string(value)
+		case "width":
+			if videos.Width, err = positiveIntForm("width", value); err != nil {
+				return nil, err
+			}
+		case "height":
+			if videos.Height, err = positiveIntForm("height", value); err != nil {
+				return nil, err
+			}
+		case "num_frames":
+			if videos.NumFrames, err = positiveIntForm("num_frames", value); err != nil {
+				return nil, err
+			}
+		case "fps":
+			if videos.FPS, err = minFloatForm("fps", value, 1); err != nil {
+				return nil, err
+			}
+		case "num_inference_steps":
+			if videos.NumInferenceSteps, err = rangedIntForm("num_inference_steps", value, minVideoSteps, maxVideoSteps); err != nil {
+				return nil, err
+			}
+		case "num_outputs_per_prompt":
+			if videos.NumOutputsPerPrompt, err = rangedIntForm("num_outputs_per_prompt", value, minVideoN, maxVideoN); err != nil {
+				return nil, err
+			}
+		case "seed":
+			if videos.Seed, err = intForm("seed", value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if videos.Prompt == "" {
+		return nil, errors.New("invalid videos request: must have prompt field")
+	}
+	return &fwkrh.ParseResult{Body: extractedBody, SkipResponseProcessing: false}, nil
+}
+
+// intForm parses a base-10 int64 form value, rejecting anything strconv cannot
+// represent as int64 so an overflow never reaches the cost fields.
+func intForm(field string, value []byte) (*int64, error) {
+	parsed, err := strconv.ParseInt(string(value), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid videos %s field: %w", field, err)
+	}
+	return &parsed, nil
+}
+
+// positiveIntForm parses a form value that the backend declares ge=1.
+func positiveIntForm(field string, value []byte) (*int64, error) {
+	parsed, err := intForm(field, value)
+	if err != nil {
+		return nil, err
+	}
+	if *parsed < 1 {
+		return nil, fmt.Errorf("invalid videos %s field: must be at least 1, got %d", field, *parsed)
+	}
+	return parsed, nil
+}
+
+// rangedIntForm parses a form value the backend bounds to [min, max].
+func rangedIntForm(field string, value []byte, min, max int64) (*int64, error) {
+	parsed, err := intForm(field, value)
+	if err != nil {
+		return nil, err
+	}
+	if *parsed < min || *parsed > max {
+		return nil, fmt.Errorf("invalid videos %s field: must be between %d and %d, got %d", field, min, max, *parsed)
+	}
+	return parsed, nil
+}
+
+// minFloatForm parses a form value the backend declares ge=min with no NaN or
+// infinity.
+func minFloatForm(field string, value []byte, min float64) (*float64, error) {
+	parsed, err := strconv.ParseFloat(string(value), 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid videos %s field: %w", field, err)
+	}
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < min {
+		return nil, fmt.Errorf("invalid videos %s field: must be a finite number >= %g, got %s", field, min, value)
+	}
+	return &parsed, nil
 }
 
 func requestBodyDecodeError(err, validationErr error) error {
