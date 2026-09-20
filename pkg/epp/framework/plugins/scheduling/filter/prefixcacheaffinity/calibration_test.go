@@ -19,10 +19,11 @@ package prefixcacheaffinity
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,27 +36,46 @@ import (
 // measured on.
 const measuredFingerprint = "sha256:measured-deployment"
 
+// Parameter names and record fields that the cases below repeat.
+const (
+	paramPeakPrefillThroughput         = "peakPrefillThroughput"
+	paramPrefillCalibrationFile        = "prefillCalibrationFile"
+	paramPrefillCalibrationFingerprint = "prefillCalibrationFingerprint"
+	paramPrefillCalibrationRequired    = "prefillCalibrationRequired"
+	paramMaxTTFTPenaltyMs              = "maxTTFTPenaltyMs"
+	keySchemaVersion                   = "schema_version"
+	keyStatus                          = "status"
+	keyFingerprint                     = "fingerprint"
+	keyModelRevision                   = "model_revision"
+	keyEngineImageDigest               = "engine_image_digest"
+	keyChunkTokens                     = "chunk_tokens"
+	keyValidSamples                    = "valid_samples"
+	keyMedianTTFTSeconds               = "median_ttft_seconds"
+	keyPeakPrefillTokensPerSecond      = "peak_prefill_tokens_per_second"
+	keyApplied                         = "applied"
+)
+
 // recordFieldOrder keeps the rendered record byte-stable, so a failure names
 // the one field the test changed.
 var recordFieldOrder = []string{
-	"schema_version", "status", "fingerprint", "model_revision", "engine_image_digest",
-	"chunk_tokens", "valid_samples", "median_ttft_seconds", "peak_prefill_tokens_per_second", "applied",
+	keySchemaVersion, keyStatus, keyFingerprint, keyModelRevision, keyEngineImageDigest,
+	keyChunkTokens, keyValidSamples, keyMedianTTFTSeconds, keyPeakPrefillTokensPerSecond, keyApplied,
 }
 
 // calibrationRecordJSON renders a complete, applicable record. An empty
 // override value drops the field, an override value is raw JSON.
 func calibrationRecordJSON(overrides map[string]string) string {
 	fields := map[string]string{
-		"schema_version":                 "1",
-		"status":                         `"OK"`,
-		"fingerprint":                    fmt.Sprintf("%q", measuredFingerprint),
-		"model_revision":                 `"Qwen/Qwen3-32B@revision"`,
-		"engine_image_digest":            `"sha256:engine-image"`,
-		"chunk_tokens":                   "2048",
-		"valid_samples":                  "20",
-		"median_ttft_seconds":            "0.128",
-		"peak_prefill_tokens_per_second": "16000",
-		"applied":                        "false",
+		keySchemaVersion:              "1",
+		keyStatus:                     `"OK"`,
+		keyFingerprint:                strconv.Quote(measuredFingerprint),
+		keyModelRevision:              `"Qwen/Qwen3-32B@revision"`,
+		keyEngineImageDigest:          `"sha256:engine-image"`,
+		keyChunkTokens:                "2048",
+		keyValidSamples:               "20",
+		keyMedianTTFTSeconds:          "0.128",
+		keyPeakPrefillTokensPerSecond: "16000",
+		keyApplied:                    "false",
 	}
 	for key, value := range overrides {
 		if value == "" {
@@ -64,7 +84,8 @@ func calibrationRecordJSON(overrides map[string]string) string {
 		}
 		fields[key] = value
 	}
-	body := "{"
+	var body strings.Builder
+	body.WriteString("{")
 	first := true
 	for _, key := range recordFieldOrder {
 		value, ok := fields[key]
@@ -72,12 +93,15 @@ func calibrationRecordJSON(overrides map[string]string) string {
 			continue
 		}
 		if !first {
-			body += ","
+			body.WriteString(",")
 		}
-		body += fmt.Sprintf("%q:%s", key, value)
+		body.WriteString(strconv.Quote(key))
+		body.WriteByte(':')
+		body.WriteString(value)
 		first = false
 	}
-	return body + "}"
+	body.WriteString("}")
+	return body.String()
 }
 
 func writeRecord(t *testing.T, body string) string {
@@ -89,8 +113,8 @@ func writeRecord(t *testing.T, body string) string {
 
 func calibrationParams(recordPath string) map[string]any {
 	return map[string]any{
-		"prefillCalibrationFile":        recordPath,
-		"prefillCalibrationFingerprint": measuredFingerprint,
+		paramPrefillCalibrationFile:        recordPath,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
 	}
 }
 
@@ -138,9 +162,9 @@ func TestA1U01_PeakPrefillThroughputPrecedence(t *testing.T) {
 		{
 			name: "explicit value equal to the default is still the operator's choice",
 			params: map[string]any{
-				"peakPrefillThroughput":         DefaultConfig.PeakPrefillThroughput,
-				"prefillCalibrationFile":        record,
-				"prefillCalibrationFingerprint": measuredFingerprint,
+				paramPeakPrefillThroughput:         DefaultConfig.PeakPrefillThroughput,
+				paramPrefillCalibrationFile:        record,
+				paramPrefillCalibrationFingerprint: measuredFingerprint,
 			},
 			want:       DefaultConfig.PeakPrefillThroughput,
 			wantSource: SourceUserConfigured,
@@ -148,9 +172,9 @@ func TestA1U01_PeakPrefillThroughputPrecedence(t *testing.T) {
 		{
 			name: "explicit value wins over the measurement",
 			params: map[string]any{
-				"peakPrefillThroughput":         12345,
-				"prefillCalibrationFile":        record,
-				"prefillCalibrationFingerprint": measuredFingerprint,
+				paramPeakPrefillThroughput:         12345,
+				paramPrefillCalibrationFile:        record,
+				paramPrefillCalibrationFingerprint: measuredFingerprint,
 			},
 			want:       12345,
 			wantSource: SourceUserConfigured,
@@ -171,17 +195,17 @@ func TestA1U01_InvalidExplicitValueIsNotMaskedByCalibration(t *testing.T) {
 	record := writeRecord(t, calibrationRecordJSON(nil))
 
 	_, err := newFactoryPlugin(t, map[string]any{
-		"peakPrefillThroughput":         -1,
-		"prefillCalibrationFile":        record,
-		"prefillCalibrationFingerprint": measuredFingerprint,
+		paramPeakPrefillThroughput:         -1,
+		paramPrefillCalibrationFile:        record,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "peakPrefillThroughput must be >= 0")
 
 	_, err = newFactoryPlugin(t, map[string]any{
-		"peakPrefillThroughput":         0,
-		"prefillCalibrationFile":        record,
-		"prefillCalibrationFingerprint": measuredFingerprint,
+		paramPeakPrefillThroughput:         0,
+		paramPrefillCalibrationFile:        record,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "peakPrefillThroughput must be > 0")
@@ -194,20 +218,20 @@ func TestA1U02_UnusableRecordsNeverReachTheConfig(t *testing.T) {
 		name string
 		body string
 	}{
-		{"zero throughput", calibrationRecordJSON(map[string]string{"peak_prefill_tokens_per_second": "0"})},
-		{"negative throughput", calibrationRecordJSON(map[string]string{"peak_prefill_tokens_per_second": "-16000"})},
-		{"missing throughput", calibrationRecordJSON(map[string]string{"peak_prefill_tokens_per_second": ""})},
-		{"zero median ttft", calibrationRecordJSON(map[string]string{"median_ttft_seconds": "0"})},
-		{"missing median ttft", calibrationRecordJSON(map[string]string{"median_ttft_seconds": ""})},
-		{"missing chunk size", calibrationRecordJSON(map[string]string{"chunk_tokens": ""})},
-		{"zero chunk size", calibrationRecordJSON(map[string]string{"chunk_tokens": "0"})},
-		{"too few samples", calibrationRecordJSON(map[string]string{"valid_samples": "9"})},
+		{"zero throughput", calibrationRecordJSON(map[string]string{keyPeakPrefillTokensPerSecond: "0"})},
+		{"negative throughput", calibrationRecordJSON(map[string]string{keyPeakPrefillTokensPerSecond: "-16000"})},
+		{"missing throughput", calibrationRecordJSON(map[string]string{keyPeakPrefillTokensPerSecond: ""})},
+		{"zero median ttft", calibrationRecordJSON(map[string]string{keyMedianTTFTSeconds: "0"})},
+		{"missing median ttft", calibrationRecordJSON(map[string]string{keyMedianTTFTSeconds: ""})},
+		{"missing chunk size", calibrationRecordJSON(map[string]string{keyChunkTokens: ""})},
+		{"zero chunk size", calibrationRecordJSON(map[string]string{keyChunkTokens: "0"})},
+		{"too few samples", calibrationRecordJSON(map[string]string{keyValidSamples: "9"})},
 		{"placeholder not run", calibrationRecordJSON(map[string]string{
-			"status": "NOT_RUN", "chunk_tokens": "", "valid_samples": "0",
-			"median_ttft_seconds": "", "peak_prefill_tokens_per_second": "",
+			keyStatus: "NOT_RUN", keyChunkTokens: "", keyValidSamples: "0",
+			keyMedianTTFTSeconds: "", keyPeakPrefillTokensPerSecond: "",
 		})},
-		{"failed run", calibrationRecordJSON(map[string]string{"status": `"FAILED"`})},
-		{"unknown schema version", calibrationRecordJSON(map[string]string{"schema_version": "2"})},
+		{"failed run", calibrationRecordJSON(map[string]string{keyStatus: `"FAILED"`})},
+		{"unknown schema version", calibrationRecordJSON(map[string]string{keySchemaVersion: "2"})},
 		{"truncated write", `{"schema_version":1,"status":"OK","peak_prefill`},
 	}
 
@@ -223,9 +247,9 @@ func TestA1U02_UnusableRecordsNeverReachTheConfig(t *testing.T) {
 			require.NoError(t, plugin.config.validate())
 
 			_, err = newFactoryPlugin(t, map[string]any{
-				"prefillCalibrationFile":        path,
-				"prefillCalibrationFingerprint": measuredFingerprint,
-				"prefillCalibrationRequired":    true,
+				paramPrefillCalibrationFile:        path,
+				paramPrefillCalibrationFingerprint: measuredFingerprint,
+				paramPrefillCalibrationRequired:    true,
 			})
 			assert.Error(t, err, "required calibration must refuse to start on the same record")
 		})
@@ -241,9 +265,9 @@ func TestA1U02_MissingRecordFile(t *testing.T) {
 	assert.Equal(t, SourceDefault, plugin.config.PeakPrefillThroughputSource)
 
 	_, err = newFactoryPlugin(t, map[string]any{
-		"prefillCalibrationFile":        missing,
-		"prefillCalibrationFingerprint": measuredFingerprint,
-		"prefillCalibrationRequired":    true,
+		paramPrefillCalibrationFile:        missing,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
+		paramPrefillCalibrationRequired:    true,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "calibration not applied")
@@ -294,18 +318,18 @@ func TestA1U03_FingerprintChangeInvalidatesTheRecord(t *testing.T) {
 	}{
 		{
 			name:       "measured on another deployment",
-			recordBody: calibrationRecordJSON(map[string]string{"fingerprint": `"sha256:other-deployment"`}),
+			recordBody: calibrationRecordJSON(map[string]string{keyFingerprint: `"sha256:other-deployment"`}),
 			params:     calibrationParams("PLACEHOLDER"),
 		},
 		{
 			name:       "record carries no fingerprint",
-			recordBody: calibrationRecordJSON(map[string]string{"fingerprint": ""}),
+			recordBody: calibrationRecordJSON(map[string]string{keyFingerprint: ""}),
 			params:     calibrationParams("PLACEHOLDER"),
 		},
 		{
 			name:       "deployment fingerprint not configured",
 			recordBody: calibrationRecordJSON(nil),
-			params:     map[string]any{"prefillCalibrationFile": "PLACEHOLDER"},
+			params:     map[string]any{paramPrefillCalibrationFile: "PLACEHOLDER"},
 		},
 	}
 
@@ -313,8 +337,8 @@ func TestA1U03_FingerprintChangeInvalidatesTheRecord(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeRecord(t, tt.recordBody)
 			params := tt.params
-			if _, ok := params["prefillCalibrationFile"]; ok {
-				params["prefillCalibrationFile"] = path
+			if _, ok := params[paramPrefillCalibrationFile]; ok {
+				params[paramPrefillCalibrationFile] = path
 			}
 			plugin, err := newFactoryPlugin(t, params)
 			require.NoError(t, err)
@@ -337,25 +361,25 @@ func TestA1U04_OptionalVersusRequiredCalibrationFailure(t *testing.T) {
 		assert.Equal(t, SourceDefault, plugin.config.PeakPrefillThroughputSource)
 
 		_, err = newFactoryPlugin(t, map[string]any{
-			"prefillCalibrationFile":        path,
-			"prefillCalibrationFingerprint": measuredFingerprint,
-			"prefillCalibrationRequired":    true,
+			paramPrefillCalibrationFile:        path,
+			paramPrefillCalibrationFingerprint: measuredFingerprint,
+			paramPrefillCalibrationRequired:    true,
 		})
 		require.Error(t, err)
 	}
 
 	// Required with no calibration configured at all is a configuration error,
 	// not a silent default.
-	_, err := newFactoryPlugin(t, map[string]any{"prefillCalibrationRequired": true})
+	_, err := newFactoryPlugin(t, map[string]any{paramPrefillCalibrationRequired: true})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "prefillCalibrationRequired")
+	assert.Contains(t, err.Error(), paramPrefillCalibrationRequired)
 
 	// Optional failure alongside an explicit value leaves that value intact.
 	record := writeRecord(t, `{"schema_version":1,"status":"OK","peak_prefill`)
 	plugin, err := newFactoryPlugin(t, map[string]any{
-		"peakPrefillThroughput":         12345,
-		"prefillCalibrationFile":        record,
-		"prefillCalibrationFingerprint": measuredFingerprint,
+		paramPeakPrefillThroughput:         12345,
+		paramPrefillCalibrationFile:        record,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 12345.0, plugin.config.PeakPrefillThroughput)
@@ -368,10 +392,10 @@ func TestA1U06_LatencyPredictorDoesNotRequireCalibration(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.json")
 
 	plugin, err := newFactoryPlugin(t, map[string]any{
-		"ttftSource":                    string(TTFTSourceLatencyPredictor),
-		"prefillCalibrationFile":        missing,
-		"prefillCalibrationFingerprint": measuredFingerprint,
-		"prefillCalibrationRequired":    true,
+		"ttftSource":                       string(TTFTSourceLatencyPredictor),
+		paramPrefillCalibrationFile:        missing,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
+		paramPrefillCalibrationRequired:    true,
 	})
 	require.NoError(t, err, "a required calibration must not block the latency predictor path")
 	assert.Equal(t, SourceNotUsed, plugin.config.PeakPrefillThroughputSource)
@@ -379,9 +403,9 @@ func TestA1U06_LatencyPredictorDoesNotRequireCalibration(t *testing.T) {
 	// The gate is on and the value is unused, so even an unset throughput is a
 	// valid configuration on this path.
 	plugin, err = newFactoryPlugin(t, map[string]any{
-		"ttftSource":                 string(TTFTSourceLatencyPredictor),
-		"peakPrefillThroughput":      0,
-		"prefillCalibrationRequired": true,
+		"ttftSource":                    string(TTFTSourceLatencyPredictor),
+		paramPeakPrefillThroughput:      0,
+		paramPrefillCalibrationRequired: true,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, SourceNotUsed, plugin.config.PeakPrefillThroughputSource)
@@ -390,11 +414,11 @@ func TestA1U06_LatencyPredictorDoesNotRequireCalibration(t *testing.T) {
 // A1-U06: a record measured on one pool is not reused for another pool, so a
 // single measurement can never stand in for a heterogeneous deployment.
 func TestA1U06_HeterogeneousPoolRecordIsNotReused(t *testing.T) {
-	record := writeRecord(t, calibrationRecordJSON(map[string]string{"fingerprint": `"sha256:pool-a"`}))
+	record := writeRecord(t, calibrationRecordJSON(map[string]string{keyFingerprint: `"sha256:pool-a"`}))
 
 	plugin, err := newFactoryPlugin(t, map[string]any{
-		"prefillCalibrationFile":        record,
-		"prefillCalibrationFingerprint": "sha256:pool-b",
+		paramPrefillCalibrationFile:        record,
+		paramPrefillCalibrationFingerprint: "sha256:pool-b",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, DefaultConfig.PeakPrefillThroughput, plugin.config.PeakPrefillThroughput)
@@ -407,8 +431,8 @@ func TestA1U06_HeterogeneousPoolRecordIsNotReused(t *testing.T) {
 func TestA1U02_UnknownCalibrationParameterIsRejected(t *testing.T) {
 	record := writeRecord(t, calibrationRecordJSON(nil))
 	_, err := newFactoryPlugin(t, map[string]any{
-		"prefillCalibrationFil":         record,
-		"prefillCalibrationFingerprint": measuredFingerprint,
+		"prefillCalibrationFil":            record,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown field")

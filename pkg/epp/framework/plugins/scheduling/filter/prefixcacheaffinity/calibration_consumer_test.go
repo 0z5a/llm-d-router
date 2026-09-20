@@ -42,7 +42,7 @@ func TestA1I01_EffectiveThroughputDrivesTheLoadGateBranch(t *testing.T) {
 
 	// Default value: the gate reopens all endpoints because the cache-warm one
 	// looks saturated.
-	plugin, err := newFactoryPlugin(t, map[string]any{"maxTTFTPenaltyMs": 5000})
+	plugin, err := newFactoryPlugin(t, map[string]any{paramMaxTTFTPenaltyMs: 5000})
 	require.NoError(t, err)
 	require.Equal(t, SourceDefault, plugin.config.PeakPrefillThroughputSource)
 	assert.Equal(t, 2, len(plugin.Filter(context.Background(), nil, fixedInput())),
@@ -50,11 +50,11 @@ func TestA1I01_EffectiveThroughputDrivesTheLoadGateBranch(t *testing.T) {
 
 	// Measured value for this deployment: the same input now keeps stickiness,
 	// so the number in the record is what routing acts on.
-	record := writeRecord(t, calibrationRecordJSON(map[string]string{"peak_prefill_tokens_per_second": "25000"}))
+	record := writeRecord(t, calibrationRecordJSON(map[string]string{keyPeakPrefillTokensPerSecond: "25000"}))
 	plugin, err = newFactoryPlugin(t, map[string]any{
-		"maxTTFTPenaltyMs":              5000,
-		"prefillCalibrationFile":        record,
-		"prefillCalibrationFingerprint": measuredFingerprint,
+		paramMaxTTFTPenaltyMs:              5000,
+		paramPrefillCalibrationFile:        record,
+		paramPrefillCalibrationFingerprint: measuredFingerprint,
 	})
 	require.NoError(t, err)
 	require.Equal(t, SourceCalibrated, plugin.config.PeakPrefillThroughputSource)
@@ -66,9 +66,9 @@ func TestA1I01_EffectiveThroughputDrivesTheLoadGateBranch(t *testing.T) {
 	// The same record on a deployment whose fingerprint differs is not applied,
 	// and the branch flips back: the record file itself does not route traffic.
 	plugin, err = newFactoryPlugin(t, map[string]any{
-		"maxTTFTPenaltyMs":              5000,
-		"prefillCalibrationFile":        record,
-		"prefillCalibrationFingerprint": "sha256:another-deployment",
+		paramMaxTTFTPenaltyMs:              5000,
+		paramPrefillCalibrationFile:        record,
+		paramPrefillCalibrationFingerprint: "sha256:another-deployment",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, SourceDefault, plugin.config.PeakPrefillThroughputSource)
