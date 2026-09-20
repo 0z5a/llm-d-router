@@ -135,6 +135,20 @@ var defaultEngineConfigs = []engineConfigParams{
 		CacheBlockSizeSpec:  "nv_trt_llm_kv_cache_block_metrics{kv_cache_block_type=tokens_per}",
 		CacheNumBlocksSpec:  "nv_trt_llm_kv_cache_block_metrics{kv_cache_block_type=max}",
 	},
+	{
+		Name:                "tokenspeed",
+		QueuedRequestsSpec:  "tokenspeed:num_requests_waiting",
+		RunningRequestsSpec: "tokenspeed:num_requests_running",
+		KVUsageSpec:         "tokenspeed:kv_cache_usage_perc",
+		// TokenSpeed does not expose a cache_config_info family, a tokens-per-block
+		// gauge, or any LoRA metrics, so all four optional specs stay empty and the
+		// prefix cache scorer falls back to its configured block size.
+		LoRASpec:      "",
+		CacheInfoSpec: "",
+		// TokenSpeed describes kv_cache_usage_perc as a 0-1 fraction
+		// (collector.py:190-193), which is the unit KVCacheUtilizationScorer
+		// assumes when it scores 1 - KVCacheUsagePercent.
+	},
 	// "triton" defines standard Triton Inference Server metrics configuration for non-LLM workloads
 	// (e.g. classic ML/DL models serving KServe v2 protocols).
 	//
