@@ -209,14 +209,18 @@ func tokenInputField(body *fwkrh.InferenceRequestBody) string {
 	}
 }
 
-// RewriteModelName writes the resolved model into the request payload map.
+// RewriteModelName writes the resolved model into the request payload map, or into
+// the model part of a multipart form body.
 func (p *OpenAIParser) RewriteModelName(payload fwkrh.MarshalablePayload, model string) (fwkrh.MarshalablePayload, error) {
-	m, ok := payload.(fwkrh.PayloadMap)
-	if !ok {
+	switch m := payload.(type) {
+	case fwkrh.PayloadMap:
+		m["model"] = model
+		return m, nil
+	case fwkrh.MultipartPayload:
+		return m.WithModel(model), nil
+	default:
 		return payload, nil
 	}
-	m["model"] = model
-	return m, nil
 }
 
 // RewritePriority removes any client-supplied priority from the
@@ -552,9 +556,9 @@ const (
 )
 
 // parseVideosRequest parses a multipart/form-data /v1/videos or /v1/videos/sync
-// request. Only scheduler-relevant scalar fields are read; the media parts and
-// the JSON-encoded reference fields stay in Payload, which remains the original
-// bytes so the forwarded body is byte-identical to what the client sent.
+// request. Only scheduler-relevant scalar fields are read; the media parts and the
+// JSON-encoded reference fields stay in Payload, which keeps the received bytes so a
+// model rewrite can replace the model part alone and still forward the media verbatim.
 func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseResult, error) {
 	contentTypeValue, _ := headerValue(headers, contentType)
 	mediaType, params, err := mime.ParseMediaType(contentTypeValue)
@@ -569,7 +573,7 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 	videos := &fwkrh.VideoGenerationRequest{NumOutputsPerPrompt: ptr.To[int64](1)}
 	extractedBody := &fwkrh.InferenceRequestBody{
 		Videos:  videos,
-		Payload: fwkrh.RawPayload(body),
+		Payload: fwkrh.NewMultipartPayload(body, boundary),
 	}
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	for {
@@ -640,13 +644,22 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 	return &fwkrh.ParseResult{Body: extractedBody, SkipResponseProcessing: false}, nil
 }
 
-// intForm parses a base-10 int64 form value, rejecting anything strconv cannot
-// represent as int64 so an overflow never reaches the cost fields.
+// intForm parses a form value the backend declares as an integer. The backend accepts
+// surrounding whitespace and an integral float spelling such as "9.0", and rejects a
+// fractional one such as "9.5"; matching that keeps the router from refusing a request
+// the backend serves.
 func intForm(field string, value []byte) (*int64, error) {
-	parsed, err := strconv.ParseInt(string(value), 10, 64)
-	if err != nil {
+	text := strings.TrimSpace(string(value))
+	parsed, err := strconv.ParseInt(text, 10, 64)
+	if err == nil {
+		return &parsed, nil
+	}
+	number, floatErr := strconv.ParseFloat(text, 64)
+	if floatErr != nil || math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) ||
+		number < math.MinInt64 || number >= math.MaxInt64 {
 		return nil, fmt.Errorf("invalid videos %s field: %w", field, err)
 	}
+	parsed = int64(number)
 	return &parsed, nil
 }
 
@@ -675,9 +688,9 @@ func rangedIntForm(field string, value []byte, min, max int64) (*int64, error) {
 }
 
 // minFloatForm parses a form value the backend declares ge=min with no NaN or
-// infinity.
+// infinity. Surrounding whitespace is trimmed for the same reason intForm trims it.
 func minFloatForm(field string, value []byte, min float64) (*float64, error) {
-	parsed, err := strconv.ParseFloat(string(value), 64)
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(string(value)), 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid videos %s field: %w", field, err)
 	}

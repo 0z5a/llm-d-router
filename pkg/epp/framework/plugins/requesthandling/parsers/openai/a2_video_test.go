@@ -81,6 +81,21 @@ func fieldsParts(fields ...string) []videoPart {
 	return parts
 }
 
+// marshalPayload returns the bytes a parsed request forwards, so a test can assert on
+// the wire form regardless of which payload type carries the body.
+func marshalPayload(t *testing.T, body *fwkrh.InferenceRequestBody) []byte {
+	t.Helper()
+	marshaler, ok := body.Payload.(fwkrh.Marshaler)
+	if !ok {
+		t.Fatalf("Payload = %T, want a fwkrh.Marshaler", body.Payload)
+	}
+	raw, err := marshaler.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	return raw
+}
+
 // A2-U01 continued: both video endpoints declare the same multipart content
 // type, so the sync endpoint must be parsed with the same field contract as the
 // async one. Path-to-parser selection is covered in the handlers package.
@@ -121,8 +136,8 @@ func TestA2U01_VideoEndpointsParseMultipart(t *testing.T) {
 			if diff := cmp.Diff(want, got.Body.Videos); diff != "" {
 				t.Errorf("Videos mismatch (-want +got):\n%s", diff)
 			}
-			if diff := cmp.Diff(fwkrh.RawPayload(body), got.Body.Payload); diff != "" {
-				t.Errorf("Payload must stay the raw multipart body (-want +got):\n%s", diff)
+			if diff := cmp.Diff(body, marshalPayload(t, got.Body)); diff != "" {
+				t.Errorf("Payload must forward the raw multipart body (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -228,7 +243,7 @@ func TestA2U02_FieldOrderMissingAndUnicode(t *testing.T) {
 // bounded - no panic, no silent zero, and never a wrong model.
 func TestA2U03_DuplicateInvalidAndOverflow(t *testing.T) {
 	parser := NewOpenAIParser()
-	t.Run("duplicate model does not panic and yields one value", func(t *testing.T) {
+	t.Run("duplicate model takes the last part", func(t *testing.T) {
 		body, ct := buildVideoMultipart(t, []videoPart{
 			{name: "prompt", value: "a cat surfing"},
 			{name: "model", value: "first-model"},
@@ -238,10 +253,10 @@ func TestA2U03_DuplicateInvalidAndOverflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseRequest() error = %v", err)
 		}
-		// Which duplicate wins is not pinned by the backend contract, so assert
-		// only that one of the two declared values was taken.
-		if got.Body.Model != "first-model" && got.Body.Model != "second-model" {
-			t.Errorf("Model = %q, want one of the two declared model parts", got.Body.Model)
+		// The backend validates the last model part, so a router that read the first
+		// would route on a name the backend does not act on.
+		if got.Body.Model != "second-model" {
+			t.Errorf("Model = %q, want %q", got.Body.Model, "second-model")
 		}
 	})
 	// Every rejected value below is rejected by the pinned backend too: either it
@@ -258,7 +273,6 @@ func TestA2U03_DuplicateInvalidAndOverflow(t *testing.T) {
 		{name: "height negative", field: "height", value: "-1"},
 		{name: "num_frames not a number", field: "num_frames", value: "eighty"},
 		{name: "num_frames float", field: "num_frames", value: "80.5"},
-		{name: "num_inference_steps float", field: "num_inference_steps", value: "40.0"},
 		{name: "num_inference_steps zero", field: "num_inference_steps", value: "0"},
 		{name: "num_inference_steps above backend cap", field: "num_inference_steps", value: "201"},
 		{name: "num_outputs_per_prompt above backend cap", field: "num_outputs_per_prompt", value: "11"},
@@ -315,11 +329,8 @@ func TestA2U04_MediaBytesAndUnknownFieldsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest() error = %v", err)
 	}
-	// The payload must be the original bytes, so media is byte-identical.
-	raw, ok := got.Body.Payload.(fwkrh.RawPayload)
-	if !ok {
-		t.Fatalf("Payload = %T, want fwkrh.RawPayload", got.Body.Payload)
-	}
+	// The payload must marshal back to the original bytes, so media is byte-identical.
+	raw := marshalPayload(t, got.Body)
 	if !bytes.Equal(raw, body) {
 		t.Error("Payload is not byte-identical to the received multipart body")
 	}
