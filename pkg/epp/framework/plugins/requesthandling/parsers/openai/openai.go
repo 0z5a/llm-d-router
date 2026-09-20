@@ -48,7 +48,13 @@ const (
 	chatCompletionsAPI = "chat/completions"
 	completionsAPI     = "completions"
 	promptField        = "prompt"
-	embeddingsAPI      = "embeddings"
+
+	// Shared multipart form field names. The images-edits and the video
+	// endpoints read the same scalar fields, and RewriteModelName splices the
+	// same model field, so the names are declared once.
+	formFieldModel             = "model"
+	formFieldNumInferenceSteps = "num_inference_steps"
+	embeddingsAPI              = "embeddings"
 	// imagesGenerationsAPI is the OpenAI-compatible image generation endpoint/
 	imagesGenerationsAPI = "images/generations"
 	// imagesEditsAPI is the OpenAI-compatible image edit (image-to-image) endpoint.
@@ -181,7 +187,7 @@ func (p *OpenAIParser) ParseRequest(ctx context.Context, body []byte, headers ma
 	}
 
 	extractedBody.Payload = bodyMap
-	if model, ok := bodyMap["model"].(string); ok {
+	if model, ok := bodyMap[formFieldModel].(string); ok {
 		extractedBody.Model = model
 	}
 	extractedBody.MaxOutputTokens = maxOutputTokensForAPI(apiType, bodyMap)
@@ -214,7 +220,7 @@ func tokenInputField(body *fwkrh.InferenceRequestBody) string {
 func (p *OpenAIParser) RewriteModelName(payload fwkrh.MarshalablePayload, model string) (fwkrh.MarshalablePayload, error) {
 	switch m := payload.(type) {
 	case fwkrh.PayloadMap:
-		m["model"] = model
+		m[formFieldModel] = model
 		return m, nil
 	case fwkrh.MultipartPayload:
 		return m.WithModel(model), nil
@@ -512,7 +518,7 @@ func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.Par
 			return nil, fmt.Errorf("error reading images edits form field %q: %w", part.FormName(), err)
 		}
 		switch part.FormName() {
-		case "model":
+		case formFieldModel:
 			extractedBody.Model = string(value)
 		case "prompt":
 			images.Prompt = string(value)
@@ -524,7 +530,7 @@ func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.Par
 				return nil, fmt.Errorf("invalid images edits n field: %w", err)
 			}
 			images.N = &n
-		case "num_inference_steps":
+		case formFieldNumInferenceSteps:
 			steps, err := strconv.ParseInt(string(value), 10, 64)
 			if err != nil {
 				return nil, fmt.Errorf("invalid images edits num_inference_steps field: %w", err)
@@ -598,7 +604,7 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 			return nil, fmt.Errorf("error reading videos form field %q: %w", part.FormName(), err)
 		}
 		switch part.FormName() {
-		case "model":
+		case formFieldModel:
 			extractedBody.Model = string(value)
 		case "prompt":
 			videos.Prompt = string(value)
@@ -624,8 +630,8 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 			if videos.FPS, err = minFloatForm("fps", value, 1); err != nil {
 				return nil, err
 			}
-		case "num_inference_steps":
-			if videos.NumInferenceSteps, err = rangedIntForm("num_inference_steps", value, minVideoSteps, maxVideoSteps); err != nil {
+		case formFieldNumInferenceSteps:
+			if videos.NumInferenceSteps, err = rangedIntForm(formFieldNumInferenceSteps, value, minVideoSteps, maxVideoSteps); err != nil {
 				return nil, err
 			}
 		case "num_outputs_per_prompt":

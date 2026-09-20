@@ -31,6 +31,7 @@ import (
 const (
 	videosPath     = "/v1/videos"
 	videosSyncPath = "/v1/videos/sync"
+	imagePNGType   = "image/png"
 )
 
 // videoPart is one multipart part. An empty filename writes a plain form field;
@@ -57,7 +58,7 @@ func buildVideoMultipart(t *testing.T, parts []videoPart) ([]byte, string) {
 		h.Set("Content-Disposition", `form-data; name="`+p.name+`"; filename="`+p.fileName+`"`)
 		ct := p.contentType
 		if ct == "" {
-			ct = "image/png"
+			ct = imagePNGType
 		}
 		h.Set("Content-Type", ct)
 		fw, err := w.CreatePart(h)
@@ -569,7 +570,7 @@ func buildVideoMultipartF(f *testing.F, parts []videoPart) ([]byte, string) {
 		h.Set("Content-Disposition", `form-data; name="`+p.name+`"; filename="`+p.fileName+`"`)
 		ct := p.contentType
 		if ct == "" {
-			ct = "image/png"
+			ct = imagePNGType
 		}
 		h.Set("Content-Type", ct)
 		fw, err := w.CreatePart(h)
@@ -646,7 +647,7 @@ func buildVideoMultipartB(b *testing.B, parts []videoPart) ([]byte, string) {
 		h.Set("Content-Disposition", `form-data; name="`+p.name+`"; filename="`+p.fileName+`"`)
 		ct := p.contentType
 		if ct == "" {
-			ct = "image/png"
+			ct = imagePNGType
 		}
 		h.Set("Content-Type", ct)
 		fw, err := w.CreatePart(h)
