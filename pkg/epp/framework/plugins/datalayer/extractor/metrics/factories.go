@@ -82,12 +82,12 @@ type (
 		// Can be any engine name from EngineConfigs. Defaults to "vllm".
 		DefaultEngine string `json:"defaultEngine"`
 		// EngineConfigs defines metric specifications for specific engine types.
-		// Built-in configs (vLLM, SGLang, trtllm-serve, triton-tensorrt-llm, triton) are automatically appended if not explicitly defined.
+		// Built-in configs (vLLM, SGLang, ATOM, TokenSpeed, trtllm-serve, triton-tensorrt-llm, triton) are automatically appended if not explicitly defined.
 		EngineConfigs []engineConfigParams `json:"engineConfigs"`
 	}
 )
 
-// Default engine configurations for vLLM, SGLang, ATOM, trtllm-serve, triton-tensorrt-llm, and triton.
+// Default engine configurations for vLLM, SGLang, ATOM, TokenSpeed, trtllm-serve, triton-tensorrt-llm, and triton.
 var defaultEngineConfigs = []engineConfigParams{
 	{
 		Name:                "vllm",
