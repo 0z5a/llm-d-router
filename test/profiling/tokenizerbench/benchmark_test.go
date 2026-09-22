@@ -243,6 +243,9 @@ func benchChatCompletion(b *testing.B, prompt string) {
 	b.ReportMetric(float64(len(prompt)), "prompt_bytes")
 }
 
+// repeatPromptToSize repeats paragraph until it can be truncated to exactly size bytes.
+// Truncation happens at a byte offset, which can split a UTF-8 rune unless paragraph is
+// ASCII, as longPromptParagraph is.
 func repeatPromptToSize(paragraph string, size int) string {
 	if size <= 0 {
 		return ""
