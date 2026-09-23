@@ -49,9 +49,7 @@ const (
 	completionsAPI     = "completions"
 	promptField        = "prompt"
 
-	// Shared multipart form field names. The images-edits and the video
-	// endpoints read the same scalar fields, and RewriteModelName splices the
-	// same model field, so the names are declared once.
+	// Shared multipart form field names for image edits and videos.
 	formFieldModel             = "model"
 	formFieldNumInferenceSteps = "num_inference_steps"
 	embeddingsAPI              = "embeddings"
@@ -215,15 +213,12 @@ func tokenInputField(body *fwkrh.InferenceRequestBody) string {
 	}
 }
 
-// RewriteModelName writes the resolved model into the request payload map, or into
-// the model part of a multipart form body.
+// RewriteModelName writes the resolved model into the request payload map.
 func (p *OpenAIParser) RewriteModelName(payload fwkrh.MarshalablePayload, model string) (fwkrh.MarshalablePayload, error) {
 	switch m := payload.(type) {
 	case fwkrh.PayloadMap:
 		m[formFieldModel] = model
 		return m, nil
-	case fwkrh.MultipartPayload:
-		return m.WithModel(model), nil
 	default:
 		return payload, nil
 	}
@@ -484,40 +479,51 @@ func extractRequestBody(apiType string, rawBody []byte) (*fwkrh.InferenceRequest
 	}
 }
 
-// parseImagesEditsRequest parses a multipart/form-data /v1/images/edits request.
-func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.ParseResult, error) {
+func parseMultipartFields(body []byte, headers map[string]string, kind string, visit func(string, []byte) error) error {
 	contentTypeValue, _ := headerValue(headers, contentType)
 	mediaType, params, err := mime.ParseMediaType(contentTypeValue)
 	if err != nil || mediaType != "multipart/form-data" {
-		return nil, errors.New("images edits request must have a multipart/form-data content-type")
+		return fmt.Errorf("%s request must have a multipart/form-data content-type", kind)
 	}
 	boundary := params["boundary"]
 	if boundary == "" {
-		return nil, errors.New("images edits request: content-type is missing the multipart boundary")
+		return fmt.Errorf("%s request: content-type is missing the multipart boundary", kind)
 	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var field bytes.Buffer
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("error reading %s multipart body: %w", kind, err)
+		}
+		if part.FileName() != "" {
+			if _, err := io.Copy(io.Discard, part); err != nil {
+				return fmt.Errorf("error reading %s file part %q: %w", kind, part.FormName(), err)
+			}
+			continue
+		}
+		field.Reset()
+		if _, err := field.ReadFrom(part); err != nil {
+			return fmt.Errorf("error reading %s form field %q: %w", kind, part.FormName(), err)
+		}
+		if err := visit(part.FormName(), field.Bytes()); err != nil {
+			return err
+		}
+	}
+}
 
+// parseImagesEditsRequest parses a multipart/form-data /v1/images/edits request.
+func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.ParseResult, error) {
 	images := &fwkrh.ImagesGenerationsRequest{}
 	extractedBody := &fwkrh.InferenceRequestBody{
 		Images:  images,
 		Payload: fwkrh.RawPayload(body),
 	}
-	reader := multipart.NewReader(bytes.NewReader(body), boundary)
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error reading images edits multipart body: %w", err)
-		}
-		if part.FileName() != "" {
-			continue
-		}
-		value, err := io.ReadAll(part)
-		if err != nil {
-			return nil, fmt.Errorf("error reading images edits form field %q: %w", part.FormName(), err)
-		}
-		switch part.FormName() {
+	err := parseMultipartFields(body, headers, "images edits", func(name string, value []byte) error {
+		switch name {
 		case formFieldModel:
 			extractedBody.Model = string(value)
 		case "prompt":
@@ -527,22 +533,26 @@ func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.Par
 		case "n":
 			n, err := strconv.ParseInt(string(value), 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("invalid images edits n field: %w", err)
+				return fmt.Errorf("invalid images edits n field: %w", err)
 			}
 			images.N = &n
 		case formFieldNumInferenceSteps:
 			steps, err := strconv.ParseInt(string(value), 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("invalid images edits num_inference_steps field: %w", err)
+				return fmt.Errorf("invalid images edits num_inference_steps field: %w", err)
 			}
 			images.NumInferenceSteps = &steps
 		case "stream":
 			stream, err := strconv.ParseBool(string(value))
 			if err != nil {
-				return nil, fmt.Errorf("invalid images edits stream field: %w", err)
+				return fmt.Errorf("invalid images edits stream field: %w", err)
 			}
 			extractedBody.Stream = stream
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if images.Prompt == "" {
 		return nil, errors.New("invalid images edits request: must have prompt field")
@@ -562,48 +572,17 @@ const (
 )
 
 // parseVideosRequest parses a multipart/form-data /v1/videos or /v1/videos/sync
-// request. Only scheduler-relevant scalar fields are read; the media parts and the
-// JSON-encoded reference fields stay in Payload, which keeps the received bytes so a
-// model rewrite can replace the model part alone and still forward the media verbatim.
+// request. Scheduler-relevant scalar fields are read while the original body is
+// forwarded unchanged.
 func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseResult, error) {
-	contentTypeValue, _ := headerValue(headers, contentType)
-	mediaType, params, err := mime.ParseMediaType(contentTypeValue)
-	if err != nil || mediaType != "multipart/form-data" {
-		return nil, errors.New("videos request must have a multipart/form-data content-type")
-	}
-	boundary := params["boundary"]
-	if boundary == "" {
-		return nil, errors.New("videos request: content-type is missing the multipart boundary")
-	}
-
 	videos := &fwkrh.VideoGenerationRequest{NumOutputsPerPrompt: ptr.To[int64](1)}
 	extractedBody := &fwkrh.InferenceRequestBody{
 		Videos:  videos,
-		Payload: fwkrh.NewMultipartPayload(body, boundary),
+		Payload: fwkrh.RawPayload(body),
 	}
-	reader := multipart.NewReader(bytes.NewReader(body), boundary)
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error reading videos multipart body: %w", err)
-		}
-		// File parts carry the reference media. They are neither interpreted nor
-		// retained, so drain them straight to io.Discard: reading the part into a
-		// buffer would hold a whole reference video in memory for nothing.
-		if part.FileName() != "" {
-			if _, err := io.Copy(io.Discard, part); err != nil {
-				return nil, fmt.Errorf("error reading videos file part %q: %w", part.FormName(), err)
-			}
-			continue
-		}
-		value, err := io.ReadAll(part)
-		if err != nil {
-			return nil, fmt.Errorf("error reading videos form field %q: %w", part.FormName(), err)
-		}
-		switch part.FormName() {
+	err := parseMultipartFields(body, headers, "videos", func(name string, value []byte) error {
+		var err error
+		switch name {
 		case formFieldModel:
 			extractedBody.Model = string(value)
 		case "prompt":
@@ -616,33 +595,37 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 			videos.Seconds = string(value)
 		case "width":
 			if videos.Width, err = positiveIntForm("width", value); err != nil {
-				return nil, err
+				return err
 			}
 		case "height":
 			if videos.Height, err = positiveIntForm("height", value); err != nil {
-				return nil, err
+				return err
 			}
 		case "num_frames":
 			if videos.NumFrames, err = positiveIntForm("num_frames", value); err != nil {
-				return nil, err
+				return err
 			}
 		case "fps":
 			if videos.FPS, err = minFloatForm("fps", value, 1); err != nil {
-				return nil, err
+				return err
 			}
 		case formFieldNumInferenceSteps:
 			if videos.NumInferenceSteps, err = rangedIntForm(formFieldNumInferenceSteps, value, minVideoSteps, maxVideoSteps); err != nil {
-				return nil, err
+				return err
 			}
 		case "num_outputs_per_prompt":
 			if videos.NumOutputsPerPrompt, err = rangedIntForm("num_outputs_per_prompt", value, minVideoN, maxVideoN); err != nil {
-				return nil, err
+				return err
 			}
 		case "seed":
 			if videos.Seed, err = intForm("seed", value); err != nil {
-				return nil, err
+				return err
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if videos.Prompt == "" {
 		return nil, errors.New("invalid videos request: must have prompt field")
