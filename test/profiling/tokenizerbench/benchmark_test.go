@@ -159,7 +159,7 @@ func BenchmarkCompletion_SharedPrefix(b *testing.B) {
 		b.Fatalf("warmup: %v", err)
 	}
 	promptTokens := resp.Usage.PromptTokens
-	b.Logf("prompt_tokens=%d prefix_chars=%d suffixes=%d", promptTokens, len(longPrompt), len(sharedPrefixSuffixes))
+	b.Logf("prompt_tokens=%d prefix_bytes=%d suffixes=%d", promptTokens, len(longPrompt), len(sharedPrefixSuffixes))
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -244,10 +244,9 @@ func benchChatCompletion(b *testing.B, prompt string) {
 }
 
 // repeatPromptToSize repeats paragraph until it can be truncated to exactly size bytes.
-// Truncation happens at a byte offset, which can split a UTF-8 rune unless paragraph is
-// ASCII, as longPromptParagraph is.
+// The paragraph must be ASCII because truncation can split a UTF-8 rune.
 func repeatPromptToSize(paragraph string, size int) string {
-	if size <= 0 {
+	if size <= 0 || len(paragraph) == 0 {
 		return ""
 	}
 	repetitions := (size + len(paragraph) - 1) / len(paragraph)

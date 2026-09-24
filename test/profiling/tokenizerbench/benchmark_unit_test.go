@@ -27,3 +27,7 @@ func TestLongPromptMatchesIssueScale(t *testing.T) {
 	require.Len(t, longPrompt, longPromptBytes)
 	require.True(t, utf8.ValidString(longPrompt))
 }
+
+func TestRepeatPromptToSizeEmptyParagraph(t *testing.T) {
+	require.Empty(t, repeatPromptToSize("", 16))
+}
