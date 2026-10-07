@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"mime"
 	"mime/multipart"
 	"strconv"
@@ -359,8 +358,6 @@ func determineAPITypeFromPath(path string) string {
 	if request.MatchPathSuffix(path, "/images/edits") {
 		return imagesEditsAPI
 	}
-	// videos/sync ends with /videos as well, so the sync suffix is compared
-	// before the async one for the sync path to resolve to its own API type.
 	if request.MatchPathSuffix(path, "/"+videosSyncAPI) {
 		return videosSyncAPI
 	}
@@ -545,17 +542,6 @@ func parseImagesEditsRequest(body []byte, headers map[string]string) (*fwkrh.Par
 	return &fwkrh.ParseResult{Body: extractedBody, SkipResponseProcessing: false}, nil
 }
 
-// Bounds the pinned vLLM-Omni form and model declare on the video endpoints.
-// Values outside them are rejected here so a malformed request fails at the
-// router with the backend's own range rather than being silently clamped or
-// zeroed into the scheduling cost fields.
-const (
-	minVideoSteps = 1
-	maxVideoSteps = 200
-	minVideoN     = 1
-	maxVideoN     = 10
-)
-
 // parseVideosRequest parses a multipart/form-data /v1/videos or /v1/videos/sync
 // request. Scheduler-relevant scalar fields are read while the original body is
 // forwarded unchanged.
@@ -566,7 +552,6 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 		Payload: fwkrh.RawPayload(body),
 	}
 	err := parseMultipartFields(body, headers, "videos", func(name string, value []byte) error {
-		var err error
 		switch name {
 		case formFieldModel:
 			extractedBody.Model = string(value)
@@ -578,34 +563,31 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 			videos.Size = string(value)
 		case "seconds":
 			videos.Seconds = string(value)
-		case "width":
-			if videos.Width, err = positiveIntForm("width", value); err != nil {
-				return err
+		case "width", "height", "num_frames", formFieldNumInferenceSteps, "num_outputs_per_prompt", "seed":
+			number, err := strconv.ParseInt(string(value), 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid videos %s field: %w", name, err)
 			}
-		case "height":
-			if videos.Height, err = positiveIntForm("height", value); err != nil {
-				return err
-			}
-		case "num_frames":
-			if videos.NumFrames, err = positiveIntForm("num_frames", value); err != nil {
-				return err
+			switch name {
+			case "width":
+				videos.Width = &number
+			case "height":
+				videos.Height = &number
+			case "num_frames":
+				videos.NumFrames = &number
+			case formFieldNumInferenceSteps:
+				videos.NumInferenceSteps = &number
+			case "num_outputs_per_prompt":
+				videos.NumOutputsPerPrompt = &number
+			case "seed":
+				videos.Seed = &number
 			}
 		case "fps":
-			if videos.FPS, err = minFloatForm("fps", value, 1); err != nil {
-				return err
+			fps, err := strconv.ParseFloat(string(value), 64)
+			if err != nil {
+				return fmt.Errorf("invalid videos fps field: %w", err)
 			}
-		case formFieldNumInferenceSteps:
-			if videos.NumInferenceSteps, err = rangedIntForm(formFieldNumInferenceSteps, value, minVideoSteps, maxVideoSteps); err != nil {
-				return err
-			}
-		case "num_outputs_per_prompt":
-			if videos.NumOutputsPerPrompt, err = rangedIntForm("num_outputs_per_prompt", value, minVideoN, maxVideoN); err != nil {
-				return err
-			}
-		case "seed":
-			if videos.Seed, err = intForm("seed", value); err != nil {
-				return err
-			}
+			videos.FPS = &fps
 		}
 		return nil
 	})
@@ -616,62 +598,6 @@ func parseVideosRequest(body []byte, headers map[string]string) (*fwkrh.ParseRes
 		return nil, errors.New("invalid videos request: must have prompt field")
 	}
 	return &fwkrh.ParseResult{Body: extractedBody, SkipResponseProcessing: false}, nil
-}
-
-// intForm parses a form value the backend declares as an integer. The backend accepts
-// surrounding whitespace and an integral float spelling such as "9.0", and rejects a
-// fractional one such as "9.5"; matching that keeps the router from refusing a request
-// the backend serves.
-func intForm(field string, value []byte) (*int64, error) {
-	text := strings.TrimSpace(string(value))
-	parsed, err := strconv.ParseInt(text, 10, 64)
-	if err == nil {
-		return &parsed, nil
-	}
-	number, floatErr := strconv.ParseFloat(text, 64)
-	if floatErr != nil || math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) ||
-		number < math.MinInt64 || number >= math.MaxInt64 {
-		return nil, fmt.Errorf("invalid videos %s field: %w", field, err)
-	}
-	parsed = int64(number)
-	return &parsed, nil
-}
-
-// positiveIntForm parses a form value that the backend declares ge=1.
-func positiveIntForm(field string, value []byte) (*int64, error) {
-	parsed, err := intForm(field, value)
-	if err != nil {
-		return nil, err
-	}
-	if *parsed < 1 {
-		return nil, fmt.Errorf("invalid videos %s field: must be at least 1, got %d", field, *parsed)
-	}
-	return parsed, nil
-}
-
-// rangedIntForm parses a form value the backend bounds to [min, max].
-func rangedIntForm(field string, value []byte, min, max int64) (*int64, error) {
-	parsed, err := intForm(field, value)
-	if err != nil {
-		return nil, err
-	}
-	if *parsed < min || *parsed > max {
-		return nil, fmt.Errorf("invalid videos %s field: must be between %d and %d, got %d", field, min, max, *parsed)
-	}
-	return parsed, nil
-}
-
-// minFloatForm parses a form value the backend declares ge=min with no NaN or
-// infinity. Surrounding whitespace is trimmed for the same reason intForm trims it.
-func minFloatForm(field string, value []byte, min float64) (*float64, error) {
-	parsed, err := strconv.ParseFloat(strings.TrimSpace(string(value)), 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid videos %s field: %w", field, err)
-	}
-	if math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < min {
-		return nil, fmt.Errorf("invalid videos %s field: must be a finite number >= %g, got %s", field, min, value)
-	}
-	return &parsed, nil
 }
 
 func requestBodyDecodeError(err, validationErr error) error {

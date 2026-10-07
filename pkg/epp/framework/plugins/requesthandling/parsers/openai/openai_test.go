@@ -2250,6 +2250,8 @@ func TestOpenAIParser_ParseRequest_MaxOutputTokens(t *testing.T) {
 	}
 }
 
+const videoFormFieldNumFrames = "num_frames"
+
 type videoFormPart struct {
 	name, value, filename, mediaType string
 }
@@ -2292,9 +2294,9 @@ func TestOpenAIParser_ParseRequestVideos(t *testing.T) {
 		videoFormPart{name: "seconds", value: "1"},
 		videoFormPart{name: "width", value: "832"},
 		videoFormPart{name: "height", value: "480"},
-		videoFormPart{name: "num_frames", value: "9.0"},
+		videoFormPart{name: videoFormFieldNumFrames, value: "9"},
 		videoFormPart{name: "fps", value: "16"},
-		videoFormPart{name: "num_inference_steps", value: "4.0"},
+		videoFormPart{name: "num_inference_steps", value: "4"},
 		videoFormPart{name: "num_outputs_per_prompt", value: "2"},
 		videoFormPart{name: "seed", value: "17"},
 		videoFormPart{name: "input_reference", value: media, filename: "reference.mp4", mediaType: "video/mp4"},
@@ -2362,11 +2364,13 @@ func TestOpenAIParser_ParseRequestVideosInvalidForms(t *testing.T) {
 		name, field, value string
 	}{
 		{name: "missing prompt"},
-		{name: "width zero", field: "width", value: "0"},
-		{name: "fractional frames", field: "num_frames", value: "9.5"},
-		{name: "fps zero", field: "fps", value: "0"},
-		{name: "too many steps", field: "num_inference_steps", value: "201"},
-		{name: "too many outputs", field: "num_outputs_per_prompt", value: "11"},
+		{name: "invalid width", field: "width", value: "wide"},
+		{name: "integral float height", field: "height", value: "480.0"},
+		{name: "fractional frames", field: videoFormFieldNumFrames, value: "9.5"},
+		{name: "invalid fps", field: "fps", value: "fast"},
+		{name: "integral float steps", field: "num_inference_steps", value: "4.0"},
+		{name: "steps with whitespace", field: "num_inference_steps", value: " 4 "},
+		{name: "invalid outputs", field: "num_outputs_per_prompt", value: "two"},
 		{name: "seed overflow", field: "seed", value: "9223372036854775808"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2394,6 +2398,61 @@ func TestOpenAIParser_ParseRequestVideosInvalidForms(t *testing.T) {
 	if _, err := parser.ParseRequest(context.Background(), body[:len(body)-20],
 		map[string]string{":path": "/v1/videos", request.HeaderContentType: ct}); err == nil {
 		t.Error("ParseRequest accepted a truncated form")
+	}
+}
+
+func TestOpenAIParser_ParseRequestVideosForwardsFieldBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		parts []videoFormPart
+		want  *fwkrh.VideoGenerationRequest
+	}{
+		{
+			name: "non-positive fields",
+			parts: []videoFormPart{
+				{name: "width", value: "0"},
+				{name: "height", value: "-1"},
+				{name: videoFormFieldNumFrames, value: "0"},
+				{name: "fps", value: "0"},
+				{name: "num_inference_steps", value: "0"},
+				{name: "num_outputs_per_prompt", value: "0"},
+				{name: "seed", value: "-1"},
+			},
+			want: &fwkrh.VideoGenerationRequest{
+				Prompt: "a cat", Width: ptr.To[int64](0), Height: ptr.To[int64](-1),
+				NumFrames: ptr.To[int64](0), FPS: ptr.To(0.0),
+				NumInferenceSteps: ptr.To[int64](0), NumOutputsPerPrompt: ptr.To[int64](0), Seed: ptr.To[int64](-1),
+			},
+		},
+		{
+			name: "fields above backend limits",
+			parts: []videoFormPart{
+				{name: "num_inference_steps", value: "201"},
+				{name: "num_outputs_per_prompt", value: "11"},
+			},
+			want: &fwkrh.VideoGenerationRequest{
+				Prompt: "a cat", NumInferenceSteps: ptr.To[int64](201), NumOutputsPerPrompt: ptr.To[int64](11),
+			},
+		},
+	} {
+		for _, path := range []string{"/v1/videos", "/v1/videos/sync"} {
+			t.Run(tc.name+path, func(t *testing.T) {
+				parts := append([]videoFormPart{{name: "prompt", value: "a cat"}}, tc.parts...)
+				body, ct := buildVideoForm(t, parts...)
+				result, err := NewOpenAIParser().ParseRequest(context.Background(), body,
+					map[string]string{":path": path, request.HeaderContentType: ct})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if diff := cmp.Diff(tc.want, result.Body.Videos); diff != "" {
+					t.Errorf("Videos mismatch (-want +got):\n%s", diff)
+				}
+				raw, ok := result.Body.Payload.(fwkrh.RawPayload)
+				if !ok || !bytes.Equal(raw, body) {
+					t.Errorf("Payload = %T, want unchanged RawPayload", result.Body.Payload)
+				}
+			})
+		}
 	}
 }
 
@@ -2428,7 +2487,7 @@ func BenchmarkVideoParseRequest(b *testing.B) {
 			{name: "prompt", value: strings.Repeat("a cinematic shot ", 16)},
 			{name: "model", value: "wan-t2v"},
 			{name: "width", value: "1280"}, {name: "height", value: "720"},
-			{name: "num_frames", value: "80"}, {name: "fps", value: "16"},
+			{name: videoFormFieldNumFrames, value: "80"}, {name: "fps", value: "16"},
 			{name: "num_inference_steps", value: "40"},
 			{name: "input_reference", value: media, filename: "ref.mp4", mediaType: "video/mp4"},
 		}},
