@@ -21,8 +21,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/textproto"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1364,7 +1366,7 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 				t.Errorf("ParseRequest() got.SkipResponseProcessing = %v, want false", got.SkipResponseProcessing)
 			}
 
-			if tt.want.Completions != nil || tt.want.ChatCompletions != nil {
+			if rawFields := wantEnvelopeRawFields(tt.want); rawFields != nil {
 				tt.want.RawBody = bodyBytes
 				payload, _ := tt.want.Payload.AsMap()
 				for key, value := range payload {
@@ -1372,7 +1374,7 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if key == promptField || raw[0] == '{' || raw[0] == '[' {
+					if slices.Contains(rawFields, key) || raw[0] == '{' || raw[0] == '[' {
 						payload[key] = json.RawMessage(raw)
 					}
 				}
@@ -1384,6 +1386,19 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 				t.Errorf("ParseRequest() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// wantEnvelopeRawFields returns the string fields an envelope-only payload keeps
+// opaque for the API the expected body belongs to, or nil for a fully decoded payload.
+func wantEnvelopeRawFields(want *fwkrh.InferenceRequestBody) []string {
+	switch {
+	case want.Responses != nil:
+		return envelopeRawFields[responsesAPI]
+	case want.Completions != nil || want.ChatCompletions != nil:
+		return envelopeRawFields[chatCompletionsAPI]
+	default:
+		return nil
 	}
 }
 
@@ -1542,6 +1557,39 @@ func TestOpenAIParser_ParseRequestPreservesJSONError(t *testing.T) {
 	}
 	if got, want := err.Error(), "error extracting request body: invalid completions request: must have prompt field"; got != want {
 		t.Fatalf("ParseRequest() error = %q, want %q", got, want)
+	}
+}
+
+func TestOpenAIParser_RequestFieldErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		body      string
+		wantField string
+	}{
+		{name: "tools type", body: `{"messages":[{"role":"user","content":"hello"}],"tools":{}}`, wantField: "tools"},
+		{name: "message role type", body: `{"messages":[{"role":123}],"tools":[]}`, wantField: "messages"},
+		{name: "missing messages", body: `{"tools":[]}`},
+		{name: "malformed JSON", body: `{"tools":[`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewOpenAIParser().ParseRequest(context.Background(), []byte(tt.body), map[string]string{":path": reqcommon.PathChatCompletions})
+			if err == nil {
+				t.Fatal("expected parser failure")
+			}
+			var fieldErr *fwkrh.RequestFieldError
+			if got := errors.As(err, &fieldErr); got != (tt.wantField != "") {
+				t.Fatalf("field error present = %v, want %v", got, tt.wantField != "")
+			}
+			if tt.wantField != "" {
+				field, _, _ := strings.Cut(fieldErr.Field, ".")
+				if field != tt.wantField {
+					t.Fatalf("field = %q, want %q", field, tt.wantField)
+				}
+				if !errors.Is(err, fieldErr.Err) {
+					t.Fatal("field error must preserve the original client error")
+				}
+			}
+		})
 	}
 }
 

@@ -15,7 +15,7 @@ The router deployment has three metric sources:
 |---|---|---|
 | EPP / router pod | EPP metrics, plugin metrics, and KV-cache metrics | EPP `/metrics`, default port `9090` |
 | Model server / engine pods | vLLM or other engine metrics | Each model server's `/metrics` |
-| P/D sidecar | MoRI-IO metrics only | HTTP `/metrics`, disabled by default |
+| P/D sidecar | Disaggregation request, stage latency/error, tool-field outcome, and MoRI-IO DNS metrics | Sidecar `/metrics` on `--metrics-port`, disabled by default |
 
 The EPP sends HTTP or HTTPS requests directly to each model server endpoint, per the
 `metrics-data-source` plugin's `scheme` parameter (default `http`).
@@ -28,7 +28,7 @@ The tables in this document show complete metric names.
 |---|---|---|
 | EPP / router pod | `llm_d_epp_` | EPP request and latency, in-flight load, pool, scheduler, plugin, data layer, flow control, disaggregation, ext_proc, prefix indexer, multimodal, fairness, predicted latency, model rewrite, and KV-cache metrics. |
 | Model server / engine | Engine-specific | Metrics exposed by the model server implementation. |
-| P/D sidecar | `moriio_dns_` | MoRI-IO peer DNS re-resolution metrics. |
+| P/D sidecar | `llm_d_disagg_sidecar_`, `moriio_dns_` | Disaggregation request, stage latency/error, tool-calling request-field outcome, and MoRI-IO peer DNS re-resolution metrics. |
 
 The model server and sidecar metrics use separate registries and prefixes. See [Deprecated series](#deprecated-series)
 for the legacy EPP names that remain available.
@@ -70,15 +70,26 @@ endpoint's `/metrics` path (configurable) and parses the response. The `core-met
 selects configured values and stores them on the endpoint for scorers. These are model server
 metrics, not EPP metrics. The raw engine metrics remain available at the model server endpoint.
 
-### P/D sidecar: MoRI-IO metrics
+### P/D sidecar
 
-The P/D sidecar currently exposes only the `moriio_dns_*` MoRI-IO metrics, and only when
-`--metrics-port` or the backward-compatible `MORIIO_METRICS_ADDR` environment variable is set. The
-endpoint serves plain HTTP unless `--metrics-cert-dir` is set; see
-[MoRI-IO DNS re-resolution](#mori-io-dns-re-resolution) for the enablement and TLS settings.
+The sidecar serves its controller-runtime registry at `/metrics` on a dedicated port, separate from
+the data-plane proxy port, so the model server's own `/metrics` stays reachable through the proxy.
+This registry is separate from the router pod's EPP registry and contains the
+[P/D sidecar request and stage](#pd-sidecar-request-and-stage-metrics),
+[tool-calling request-field](#sidecar-tool-calling-request-fields), and
+[MoRI-IO DNS re-resolution](#mori-io-dns-re-resolution) metrics.
 
-This endpoint belongs to the sidecar process;
-its controller-runtime registry is separate from the router pod's EPP registry.
+The endpoint is disabled by default. Pass `--metrics-port` (e.g. `--metrics-port=9090`) to the
+sidecar to enable it; `0` (the default) disables it. The `MORIIO_METRICS_ADDR` env var
+(e.g. `:9090`) is a backward-compatible fallback, consulted only when `--metrics-port` is unset.
+
+The endpoint serves plain HTTP by default. Pass `--metrics-cert-dir` with a directory containing
+`tls.crt` and `tls.key` to serve it over TLS instead. Missing or invalid files stop the sidecar; the
+metrics listener does not fall back to HTTP. The metrics TLS setting is independent of
+`--secure-serving` and `--cert-path`, which apply to the sidecar data-plane listener.
+
+Configuring the metrics listener controls scraping; field checks and trace attributes do not
+require that listener.
 
 ## Metrics catalog
 
@@ -104,7 +115,7 @@ lifecycle handled by the router.
 | Full metric name | Type | Labels | Notes |
 |---|---|---|---|
 | `llm_d_epp_request_total` | Counter | `model_name`, `target_model_name`, `fairness_id`, `priority` | Total requests. |
-| `llm_d_epp_request_error_total` | Counter | `model_name`, `target_model_name`, `fairness_id`, `priority`, `error_code` | Errored requests. |
+| `llm_d_epp_request_error_total` | Counter | `model_name`, `target_model_name`, `fairness_id`, `priority`, `error_code` | Errored requests. A request evicted after dispatch is counted with `error_code="ResourceExhausted"`. |
 | `llm_d_epp_request_duration_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | End-to-end request latency. Carries a trace exemplar; see [Exemplars](#exemplars). |
 | `llm_d_epp_request_size_bytes` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Request body size. |
 | `llm_d_epp_response_size_bytes` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Response body size. |
@@ -112,16 +123,60 @@ lifecycle handled by the router.
 | `llm_d_epp_request_output_tokens` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Output token count. |
 | `llm_d_epp_request_cached_tokens` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Prompt tokens served from cache. |
 | `llm_d_epp_request_running` | Gauge | `model_name`, `target_model_name`, `fairness_id`, `priority` | Requests currently in flight. |
-| `llm_d_epp_request_ntpot_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Normalized time per output token. |
-| `llm_d_epp_request_ttft_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority`, `streaming` | Time to first token. |
-| `llm_d_epp_request_streaming_tpot_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Time per output token for streaming. |
-| `llm_d_epp_request_streaming_itl_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Inter-token latency for streaming. |
+| `llm_d_epp_request_ntpot_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Normalized time per output token. Carries a trace exemplar; see [Exemplars](#exemplars). |
+| `llm_d_epp_request_ttft_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority`, `streaming` | Time to first token. Carries a trace exemplar; see [Exemplars](#exemplars). |
+| `llm_d_epp_request_streaming_tpot_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Time per output token for streaming. Carries a trace exemplar; see [Exemplars](#exemplars). |
+| `llm_d_epp_request_streaming_itl_seconds` | Histogram | `model_name`, `target_model_name`, `fairness_id`, `priority` | Inter-token latency for streaming. Carries a trace exemplar; see [Exemplars](#exemplars). |
+
+Requests answered locally by a responder, such as `GET /v1/models`, are not counted in
+`llm_d_epp_request_total` or `llm_d_epp_request_size_bytes`. A responder error is counted in
+`llm_d_epp_request_error_total` with empty `model_name` and `target_model_name` labels.
+
+#### Streaming latency buckets
+
+`llm_d_epp_request_streaming_tpot_seconds` and `llm_d_epp_request_streaming_itl_seconds` use
+5 ms bucket spacing from 5 ms through 50 ms, the range interactive decoding falls in, and keep
+the original edges outside it.
+
+Either ladder can be replaced independently, in the `metrics` section of the EPP
+configuration file:
+
+```yaml
+apiVersion: llm-d.ai/v1
+kind: EndpointPickerConfig
+metrics:
+  requestTPOTBuckets: [0.005, 0.01, 0.02]
+  requestITLBuckets: [0.005, 0.01]
+plugins:
+  # ...
+schedulingProfiles:
+  # ...
+```
+
+Both histograms are process-wide and are built once during metric registration, which happens
+after the configuration file is parsed, so this is a global setting rather than a plugin
+parameter. Edges are in seconds and must be finite, positive and strictly increasing, and a
+ladder is limited to 64 edges; the `+Inf` bucket is implicit, and an invalid list fails startup
+rather than falling back silently. **A histogram whose key is omitted uses the refined default
+edges described above**, and setting one key does not change the other. An explicitly empty
+list is rejected, so a typo cannot silently restore the defaults.
+
+Longer ladders increase series cardinality and can affect rolling-upgrade query windows:
+
+- **Cardinality.** Every edge is one more series per label combination, on top of `_sum` and
+  `_count`, so the cost scales with the number of distinct
+  `model_name`/`target_model_name`/`fairness_id`/`priority` combinations a deployment produces.
+  The 64-edge limit bounds that growth; it leaves room above both default ladders, which have
+  25 and 21 edges.
+- **Rolling upgrades.** Pods on the old and new layouts expose different `le` sets at the same
+  time, so a query window spanning both can combine two bucket layouts until the rollout
+  finishes.
 
 #### Exemplars
 
-`llm_d_epp_request_duration_seconds` attaches the request's trace context to each
-observation as a Prometheus exemplar, so a point on a latency graph can be opened as
-the trace behind it.
+Latency histograms whose notes say they carry a trace exemplar attach the request's
+trace context to each observation as a Prometheus exemplar, so a point on a latency
+graph can be opened as the trace behind it.
 
 | Exemplar label | Present when |
 |---|---|
@@ -142,6 +197,73 @@ Two things are needed to see them:
 
 Grafana turns the exemplar into a link to the trace when the Prometheus data source has
 an exemplar link configured to a traces backend.
+
+### Tool-calling request integrity
+
+EPP collects tool-calling telemetry when `--enable-tool-calling-telemetry` is set. The
+flag defaults to false. Trace export also requires tracing to be enabled.
+
+This counter records observed outcomes for supported tool-calling request fields. It does not
+include field values or request content.
+
+Request checks cover Chat Completions (`tools`, `tool_choice`, `parallel_tool_calls`,
+`response_format`), Messages (`tools`, `tool_choice`), and Responses (`tools`, `tool_choice`,
+`parallel_tool_calls`). Provider-prefixed inference endpoints are supported. For
+`component="epp"`, render, count-token, and response-management subpaths are excluded.
+Responses structured output (`text.format`) is outside these field checks.
+
+The `component` label distinguishes the EPP inference-request boundary (`epp`) from the
+EPP-side HTTP tokenizer client (`tokenizer_http`). The tokenizer compares the serialized
+input with the render copy after render-only transformations, once per call across retries.
+For HTTP Messages compatibility conversion, the comparison baseline is the original
+tool fields translated to Chat Completions format. Tool-choice modes and
+`disable_parallel_tool_use` are translated, and spans retain the Messages API summary.
+Its counters check local request-field preservation, not render success or template intent.
+Warmup calls, absent fields, unavailable endpoints, and failed telemetry capture are excluded.
+
+| Full metric name | Type | Labels | Notes |
+|---|---|---|---|
+| `llm_d_epp_tool_calling_field_status_total` | Counter | `component`, `direction`, `field`, `status` | Observed request-field preservation, change, drop, or rejection outcomes. |
+
+The `llm_d.tool_calling.present` trace attribute indicates that a supported `tools`,
+`tool_choice`, or `parallel_tool_calls` field was supplied, including empty or null values.
+Chat Completions `response_format` is compared separately for integrity. Requests containing
+only `response_format` report its field status and `present=false`, without tool-choice or
+tool-count attributes.
+
+At the EPP inference-request boundary, errors unrelated to tool fields, scheduling failures,
+and failures to read fields for telemetry produce no field-status metrics. The trace retains summary metadata, such as tool presence,
+tool-choice mode, and a tool-count bucket, when it can be read from the incoming request.
+EPP reports `rejected` only for a supported field identified by the parser as causing the
+request to fail. This covers invalid JSON types in `tools` for Chat Completions and Messages,
+including typed fields within Messages tool definitions. EPP does not add validation rules
+for fields the parsers accept.
+
+### Tool-calling response traces
+
+When EPP processes a Chat Completions or Messages response, including provider-prefixed
+endpoints, recording request spans receive four boolean attributes if the incoming request
+has `llm_d.tool_calling.present=true`. Inspection supports JSON and SSE responses. Presence
+covers non-empty Chat Completions `tool_calls` or legacy `function_call` fields and Messages
+`tool_use` blocks.
+
+| Trace attribute | Meaning |
+|---|---|
+| `llm_d.tool_calling.response.upstream_present` | Tool call observed in a completed JSON body or SSE event received by EPP. |
+| `llm_d.tool_calling.response.forwarded_present` | Tool call observed in a completed JSON body or SSE event whose body bytes were successfully sent to Envoy. |
+| `llm_d.tool_calling.response.upstream_detection_incomplete` | Upstream response interrupted or received content could not be fully inspected. |
+| `llm_d.tool_calling.response.forwarded_detection_incomplete` | Forwarding interrupted or sent content could not be fully inspected. |
+
+During inspection, malformed JSON, unfinished SSE data events, and SSE events exceeding the
+1 MiB buffer limit set the corresponding incomplete flag. SSE events require a terminating blank line.
+A `*_present=false` value with `*_detection_incomplete=true` leaves tool-call presence unknown.
+Presence can remain `true` alongside an incomplete flag after an observed event and a later
+interruption. Each direction stops inspecting events after detecting presence, so these flags
+do not validate all later SSE events or tool arguments.
+
+Forwarded observations confirm successful ext-proc sends to Envoy; application receipt and semantic
+preservation of tool calls remain unverified. These attributes contain no response bodies,
+tool names, or tool arguments, and do not measure model-server tool-parser quality.
 
 ### Inference pool
 
@@ -174,8 +296,21 @@ These metrics are owned by EPP scheduler instrumentation.
 
 | Full metric name | Type | Labels | Notes |
 |---|---|---|---|
-| `llm_d_epp_scheduler_e2e_duration_seconds` | Histogram | - | End-to-end scheduling latency. |
+| `llm_d_epp_scheduler_e2e_duration_seconds` | Histogram | - | End-to-end scheduling latency. Carries a trace exemplar; see [Exemplars](#exemplars). |
 | `llm_d_epp_scheduler_attempts_total` | Counter | `status`, `target_model_name`, `endpoint_name`, `namespace`, `port` | Scheduling attempts. |
+| `llm_d_epp_scheduler_filter_eliminated_total` | Counter | `profile`, `plugin_type`, `plugin_name` | Candidate endpoints removed by each filter in a scheduler profile run. Filters after the one that removes the last candidate do not run, so that filter is the last one counted for the run. |
+| `llm_d_epp_scheduler_failures_total` | Counter | `reason` | Failed scheduling attempts. Each attempt counted with `status="failure"` in `llm_d_epp_scheduler_attempts_total` is counted here once. |
+
+`reason` is one of:
+
+| Reason | Meaning |
+|---|---|
+| `all_filtered` | The filters of at least one scheduler profile removed every candidate, and the profile handler failed the attempt. `llm_d_epp_scheduler_filter_eliminated_total` shows which filter removed them. |
+| `no_profile_selected` | The profile handler selected no scheduler profile to run, for example a `header-profile-handler` request whose header names no configured profile. |
+| `profile_handler_error` | The profile handler failed the attempt with every profile run succeeding, or wrote a request attribute it does not declare. |
+
+Requests rejected before scheduling, when no endpoint matches the request or screeners remove every
+candidate, are not scheduling attempts and are not counted by these metrics.
 
 ### EPP processing overhead
 
@@ -205,6 +340,19 @@ These metrics are owned by the EPP data-layer runtime.
 |---|---|---|---|
 | `llm_d_epp_datalayer_poll_errors_total` | Counter | `source_type` | Data-source poll failures. |
 | `llm_d_epp_datalayer_extract_errors_total` | Counter | `source_type`, `extractor_type` | Extractor failures. |
+
+### Endpoint health
+
+These metrics belong to `endpoint-health-filter`. They are registered when the filter is configured
+and updated when the filter observes a change in an endpoint's health. The `reason` label is
+`poll` for failing metric polls and `response` for consecutive failed responses.
+
+| Full metric name | Type | Labels | Notes |
+|---|---|---|---|
+| `llm_d_epp_endpoint_health_excluded_endpoints` | Gauge | `plugin_name` | Endpoints currently excluded from scheduling. |
+| `llm_d_epp_endpoint_health_ejections_total` | Counter | `plugin_name`, `reason` | Endpoints marked unhealthy. |
+| `llm_d_epp_endpoint_health_readmissions_total` | Counter | `plugin_name`, `reason` | Unhealthy marks cleared. An endpoint is readmitted once no reason marks it. |
+| `llm_d_epp_endpoint_health_fail_open_total` | Counter | `plugin_name` | Scheduling cycles in which every candidate was unhealthy and all were kept. Alert on a non-zero rate. |
 
 ### Prefix cache indexer (approximate)
 
@@ -333,6 +481,13 @@ is one of:
 | `no_endpoints` | Endpoint discovery has no render endpoint to select. |
 | `other` | Any other failure. |
 
+For requests with captured tool-field attributes, the `tokenize` span records the render
+result in `llm_d.epp.token_producer.result`. A decoded conversation response with no tokens
+sets the producer result to `skipped_no_tokens`. The HTTP client span records `http.response.status_code`;
+HTTP 4xx rejection is a render error with reason `status`, without inferring which tool
+field caused it. Render metrics aggregate tool and non-tool requests. Field preservation
+checks and a successful render do not establish template-intent preservation.
+
 A request whose render call fails is routed without a tokenized prompt, so prefix-cache scoring is
 skipped for it. A saturated render endpoint shows as a rising `timeout` rate with durations at the
 render budget, while a render endpoint that is down shows `connection` failures with short
@@ -448,7 +603,7 @@ These metrics are owned by the EPP Flow Control layer.
 
 | Full metric name | Type | Labels | Notes |
 |---|---|---|---|
-| `llm_d_epp_flow_control_request_queue_duration_seconds` | Histogram | `fairness_id`, `priority`, `outcome`, `inference_pool`, `model_name`, `target_model_name` | Time from queue entry to terminal outcome. |
+| `llm_d_epp_flow_control_request_queue_duration_seconds` | Histogram | `fairness_id`, `priority`, `outcome`, `inference_pool`, `model_name`, `target_model_name` | Time from queue entry to terminal outcome. Carries a trace exemplar; see [Exemplars](#exemplars). |
 | `llm_d_epp_flow_control_dispatch_cycle_duration_seconds` | Histogram | - | Cost of one dispatch cycle. |
 | `llm_d_epp_flow_control_request_enqueue_duration_seconds` | Histogram | `fairness_id`, `priority`, `outcome` | Time spent admitting a request to the queue. |
 | `llm_d_epp_flow_control_queue_size` | Gauge | `fairness_id`, `priority`, `inference_pool`, `model_name`, `target_model_name` | Requests currently held in the queue. |
@@ -711,25 +866,73 @@ use the labels shown below.
 | `llm_d_epp_kv_cache_events_pool_queue_depth` | Gauge | - | Messages queued across event-pool workers. |
 | `llm_d_epp_kv_cache_events_pool_capacity` | Gauge | - | Event-pool worker capacity. |
 
+### P/D sidecar request and stage metrics
+
+Emitted by the sidecar proxy on its `/metrics` endpoint; see [P/D sidecar](#pd-sidecar) for
+enablement and TLS.
+
+| Full metric name | Type | Labels | Notes |
+|---|---|---|---|
+| `llm_d_disagg_sidecar_requests_total` | Counter | `api_type` | Requests on the intercepted inference API paths. `api_type` is `chat_completions`, `completions`, `messages`, `responses`, `vllm_generate`, or `sglang_generate`. |
+| `llm_d_disagg_sidecar_disagg_requests_total` | Counter | `disagg_type` | Requests routed through disaggregation. `disagg_type` is `prefill-decode`, `encode-decode`, or `encode-prefill-decode`. |
+| `llm_d_disagg_sidecar_encode_duration_seconds` | Histogram | - | Encode stage latency. |
+| `llm_d_disagg_sidecar_prefill_duration_seconds` | Histogram | - | Prefill stage latency. |
+| `llm_d_disagg_sidecar_decode_duration_seconds` | Histogram | - | Decode stage latency. Not sampled when prefill returns an error status, since decode is then not run or its output is discarded. |
+| `llm_d_disagg_sidecar_request_errors_total` | Counter | `stage` | Stage errors. `stage` is `encode`, `prefill`, or `decode`. |
+| `llm_d_disagg_sidecar_tool_calling_field_status_total` | Counter | `component`, `direction`, `field`, `status` | Observed request-field outcomes, once per field and client request. |
+
+#### Sidecar tool-calling request fields
+
+Checks cover Chat Completions (`tools`, `tool_choice`, `parallel_tool_calls`, `response_format`)
+and Messages (`tools`, `tool_choice`). Responses, Completions, and native Generate APIs are excluded.
+Supported paths include direct/data-parallel forwarding, sequential and parallel NIXL, P2P
+prefill/decode and peer/self-source forwarding, Mooncake, SGLang, shared-storage, encoder-to-inference
+handoffs, and chunked decode. Per-image encoder priming is outside the full inference-field checks.
+
+| Label | Values |
+|---|---|
+| `component` | `routing_sidecar` |
+| `direction` | `request` |
+| `field` | `tools`, `tool_choice`, `parallel_tool_calls`, `response_format`, subject to API support |
+| `status` | `preserved`, `changed`, `dropped`; `rejected` is reserved for explicit field-specific rejection |
+
+Comparisons use the client snapshot and the serialized body at each actual inference dispatch.
+JSON object key order and equivalent numeric representations do not count as changes; array order
+and absent versus null values do. Each observed field contributes one worst outcome across dispatched
+stages, retries, and decode chunks: `preserved` < `changed` < `dropped` < `rejected`.
+Prepared but unsent requests produce no field outcomes. Generic HTTP errors, network failures, and
+cancellation do not establish field rejection; the sidecar has no field-specific rejection signal.
+Failed captures produce no guessed outcomes. Direct passthrough checks require complete, valid body
+consumption and preserve the forwarded bytes.
+
+Existing `forward_request` spans carry the combined request outcomes. Existing `prefill`, `decode`,
+and `chunked_decode` spans carry their own dispatch outcomes. Asynchronous prefill does not delay
+request reporting. Tool-field attributes use the shared `llm_d.tool_calling.*` convention:
+`api_surface`, `present`, `tool_choice`, `tool_count`, and `field.<field>.status`.
+Choice values are `auto`, `none`, `required`, `named`, or `unknown`; nonempty tool arrays use count
+buckets `1`, `2-5`, `6-10`, or `11+`. Named choices omit the tool name.
+
+Requests without supported tool fields or observed field outcomes receive no tool attributes or
+counters. A Chat Completions request containing only `response_format` retains its field outcome
+with `present=false` and no choice/count attributes. Valid client summaries can remain on a trace
+when a failure prevents dispatch. Tool-field telemetry omits tool names, schemas, arguments, prompt
+content, and content-derived hashes. Response-field integrity is outside these checks.
+
+To compare request-field outcome rates across EPP and sidecar metrics scraped by the same
+Prometheus instance:
+
+```promql
+sum by (component, field, status) (
+  rate({__name__=~"llm_d_(epp|disagg_sidecar)_tool_calling_field_status_total", direction="request"}[5m])
+)
+```
+
 ### MoRI-IO DNS re-resolution
 
 Emitted by the sidecar proxy when MoRI-IO peer host specs are DNS names that are re-resolved on the
 request path (see the
-[MoRI-IO feature guide](../pkg/sidecar/proxy/MORIIO_README.md)). The collectors are registered on
-the sidecar process's controller-runtime registry. That registry is separate from the router pod's
-EPP registry. These metrics are unlabeled.
-
-Unlike the EPP `/metrics` endpoint, the sidecar does not serve metrics by
-default. Pass `--metrics-port` (e.g. `--metrics-port=9090`) to the sidecar to
-expose these counters at `/metrics` on that port; `0` (the default) disables it.
-The `MORIIO_METRICS_ADDR` env var (e.g. `:9090`) is a backward-compatible
-fallback, consulted only when `--metrics-port` is unset.
-
-The endpoint serves plain HTTP by default. Pass `--metrics-cert-dir` with a
-directory containing `tls.crt` and `tls.key` to serve it over TLS instead.
-Missing or invalid files stop the sidecar; the metrics listener does not fall
-back to HTTP. The metrics TLS setting is independent of `--secure-serving` and
-`--cert-path`, which apply to the sidecar data-plane listener.
+[MoRI-IO feature guide](../pkg/sidecar/proxy/MORIIO_README.md)). These metrics are unlabeled and are
+served on the sidecar `/metrics` endpoint; see [P/D sidecar](#pd-sidecar) for enablement and TLS.
 
 | Full metric name | Type | Labels | Notes |
 |---|---|---|---|

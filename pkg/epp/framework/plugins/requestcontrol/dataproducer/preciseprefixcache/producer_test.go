@@ -31,11 +31,13 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
 	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
+	tokenproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/tokenizer"
 	"github.com/llm-d/llm-d-router/test/utils"
 )
 
@@ -520,6 +522,61 @@ func TestProduce_WritesCachedBlocksByTier(t *testing.T) {
 	assert.Empty(t, info.CachedBlocksByTier())
 }
 
+func TestProduce_MatchBlocksToleratesWeightedScoreRoundOff(t *testing.T) {
+	sum := func(weight float64, blocks int) float64 {
+		s := 0.0
+		for range blocks {
+			s += weight
+		}
+		return s
+	}
+	tests := []struct {
+		name  string
+		score float64
+		want  int
+	}{
+		{name: "ten cpu blocks", score: sum(0.8, 10), want: 8},
+		{name: "long prompt of cpu blocks", score: sum(0.8, 13425), want: 10740},
+		{name: "fractional score floors", score: 2.4, want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := utils.NewTestContext(t)
+			endpoints := freshEndpoints()
+
+			idx := &fakeKVCacheIndexer{
+				computeFromTokens: func(context.Context, []uint32, string, []*kvblock.BlockExtraFeatures) ([]kvblock.BlockHash, error) {
+					return []kvblock.BlockHash{0xA1}, nil
+				},
+				matchBlockKeys: func(context.Context, []kvblock.BlockHash, sets.Set[string]) (map[string]kvcache.PodMatch, error) {
+					return map[string]kvcache.PodMatch{
+						"10.0.0.1:8080": {WeightedScore: tt.score, BlocksByTier: map[string]int{"cpu": 1}},
+					}, nil
+				},
+			}
+
+			p := newProducerWithIndexer(ctx, idx)
+			req := &scheduling.InferenceRequest{
+				RequestID:   "req-round-off",
+				TargetModel: "test-model",
+				Body: &fwkrh.InferenceRequestBody{
+					TokenizedRequest: &fwkrh.TokenizedRequest{
+						Prompts: []fwkrh.PromptTokens{{TokenIDs: []uint32{1, 2, 3, 4}}},
+					},
+				},
+			}
+
+			require.NoError(t, p.Produce(ctx, req, endpoints))
+
+			raw, ok := endpoints[0].Get(attrprefix.PrefixCacheMatchInfoDataKey.WithNonEmptyProducerName("test"))
+			require.True(t, ok)
+			info, ok := raw.(*attrprefix.PrefixCacheMatchInfo)
+			require.True(t, ok)
+			assert.Equal(t, tt.want, info.MatchBlocks())
+		})
+	}
+}
+
 // MM match uses cachedBlocks (literal), not matchLen (tier-weighted score).
 func TestProduce_MMMatchUsesCachedBlocksNotWeightedScore(t *testing.T) {
 	ctx := utils.NewTestContext(t)
@@ -555,7 +612,7 @@ func TestProduce_MMMatchUsesCachedBlocksNotWeightedScore(t *testing.T) {
 				Prompts: []fwkrh.PromptTokens{{
 					TokenIDs: tokens,
 					MultiModalFeatures: []fwkrh.MultiModalFeature{
-						{Modality: fwkrh.ModalityImage, Hash: "img", Offset: 48, Length: 16},
+						{Modality: reqcommon.ModalityImage, Hash: "img", Offset: 48, Length: 16},
 					},
 				}},
 			},
@@ -615,8 +672,8 @@ func TestProduce_MMMatchTokensCountPerFeature(t *testing.T) {
 				Prompts: []fwkrh.PromptTokens{{
 					TokenIDs: tokens,
 					MultiModalFeatures: []fwkrh.MultiModalFeature{
-						{Modality: fwkrh.ModalityImage, Hash: "img-a", Offset: 2, Length: 20},
-						{Modality: fwkrh.ModalityImage, Hash: "img-b", Offset: 32, Length: 20},
+						{Modality: reqcommon.ModalityImage, Hash: "img-a", Offset: 2, Length: 20},
+						{Modality: reqcommon.ModalityImage, Hash: "img-b", Offset: 32, Length: 20},
 					},
 				}},
 			},
@@ -708,8 +765,8 @@ func TestProduce_MultiPromptMMAttributionSumsPerPrompt(t *testing.T) {
 		Body: &fwkrh.InferenceRequestBody{
 			TokenizedRequest: &fwkrh.TokenizedRequest{
 				Prompts: []fwkrh.PromptTokens{
-					{TokenIDs: promptA, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: fwkrh.ModalityImage, Hash: "img-a", Offset: 0, Length: 16}}},
-					{TokenIDs: promptB, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: fwkrh.ModalityImage, Hash: "img-b", Offset: 32, Length: 16}}},
+					{TokenIDs: promptA, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: reqcommon.ModalityImage, Hash: "img-a", Offset: 0, Length: 16}}},
+					{TokenIDs: promptB, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: reqcommon.ModalityImage, Hash: "img-b", Offset: 32, Length: 16}}},
 					{TokenIDs: promptC},
 				},
 			},
@@ -798,8 +855,8 @@ func TestProduce_MultiPromptMMTokensSumPerPrompt(t *testing.T) {
 		Body: &fwkrh.InferenceRequestBody{
 			TokenizedRequest: &fwkrh.TokenizedRequest{
 				Prompts: []fwkrh.PromptTokens{
-					{TokenIDs: promptA, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: fwkrh.ModalityImage, Hash: "img-a", Offset: 0, Length: 16}}},
-					{TokenIDs: promptB, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: fwkrh.ModalityImage, Hash: "img-b", Offset: 0, Length: 16}}},
+					{TokenIDs: promptA, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: reqcommon.ModalityImage, Hash: "img-a", Offset: 0, Length: 16}}},
+					{TokenIDs: promptB, MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: reqcommon.ModalityImage, Hash: "img-b", Offset: 0, Length: 16}}},
 				},
 			},
 		},
@@ -843,7 +900,7 @@ func TestProduce_PassesMMExtraFeatures(t *testing.T) {
 			TokenizedRequest: &fwkrh.TokenizedRequest{
 				Prompts: []fwkrh.PromptTokens{{
 					TokenIDs:           tokens,
-					MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: fwkrh.ModalityImage, Hash: "abc", Offset: 2, Length: 4}},
+					MultiModalFeatures: []fwkrh.MultiModalFeature{{Modality: reqcommon.ModalityImage, Hash: "abc", Offset: 2, Length: 4}},
 				}},
 			},
 		},
@@ -875,7 +932,7 @@ func TestProduce_FoldsCacheSalt(t *testing.T) {
 		},
 		{
 			name: "salt appended after mm hash",
-			mm:   []fwkrh.MultiModalFeature{{Modality: fwkrh.ModalityImage, Hash: "abc", Offset: 2, Length: 4}},
+			mm:   []fwkrh.MultiModalFeature{{Modality: reqcommon.ModalityImage, Hash: "abc", Offset: 2, Length: 4}},
 			want: []kvblock.MMHash{{Hash: "abc"}, {Hash: "s3cr3t"}},
 		},
 	}
@@ -966,6 +1023,90 @@ func TestPluginFactory_RejectsTokenizersPoolConfig(t *testing.T) {
 	_, err := PluginFactory("test", plugin.StrictDecoder(raw), handle)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `unknown field "tokenizersPoolConfig"`)
+}
+
+// TestTokenProducerDependencyValidation is the regression test for #1471: the
+// precise-prefix-cache producer hashes engine-aligned token IDs into KV-block
+// keys that must match the model server's prefix cache. The token-producer's
+// estimate backend emits non-engine pseudo-tokens, so a precise config that
+// resolves its TokenizedPrompt via the estimate backend would silently corrupt
+// lookups. Level-2 attribute validation in datalayer.BuildRegistry and
+// Registry.ValidateConsumer rejects an estimate-backed or missing token-producer
+// at startup, independent of factory instantiation order.
+func TestTokenProducerDependencyValidation(t *testing.T) {
+	newHandle := func(t *testing.T) plugin.Handle {
+		return plugin.NewEppHandle(utils.NewTestContext(t), nil)
+	}
+	addPrecise := func(t *testing.T, handle plugin.Handle) {
+		p, err := PluginFactory("precise", nil, handle)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			p.(*Producer).subscribersManager.Shutdown(utils.NewTestContext(t))
+		})
+		handle.AddPlugin(p.TypedName().Name, p)
+	}
+	addTokenProducer := func(t *testing.T, handle plugin.Handle, raw string) {
+		tp, err := tokenproducer.PluginFactory("token-producer", plugin.StrictDecoder(json.RawMessage(raw)), handle)
+		require.NoError(t, err)
+		handle.AddPlugin("token-producer", tp)
+	}
+	validateHandle := func(handle plugin.Handle) error {
+		plugins := handle.GetAllPlugins()
+		reg, err := fwkdl.BuildRegistry(plugins)
+		if err != nil {
+			return err
+		}
+		for _, p := range plugins {
+			if c, ok := p.(plugin.ConsumerPlugin); ok {
+				if err := reg.ValidateConsumer(c); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	t.Run("no precise producer: nothing to validate", func(t *testing.T) {
+		handle := newHandle(t)
+		require.NoError(t, validateHandle(handle))
+	})
+
+	t.Run("precise with render-backed token-producer: ok", func(t *testing.T) {
+		handle := newHandle(t)
+		addTokenProducer(t, handle, `{"modelName":"test-model"}`)
+		addPrecise(t, handle)
+		require.NoError(t, validateHandle(handle))
+	})
+
+	t.Run("precise with estimate-backed token-producer: rejected", func(t *testing.T) {
+		handle := newHandle(t)
+		// Empty config selects the zero-config estimate default.
+		addTokenProducer(t, handle, `{}`)
+		addPrecise(t, handle)
+		err := validateHandle(handle)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), `producer attribute "backend"="estimate" does not match required "vllm"`)
+	})
+
+	t.Run("precise with no token-producer at all: rejected", func(t *testing.T) {
+		handle := newHandle(t)
+		addPrecise(t, handle)
+		err := validateHandle(handle)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "not produced by any registered plugin")
+	})
+
+	t.Run("precise with custom-named render producer and estimate default: rejected", func(t *testing.T) {
+		handle := newHandle(t)
+		addTokenProducer(t, handle, `{}`)
+		customTP, err := tokenproducer.PluginFactory("render-tp", plugin.StrictDecoder(json.RawMessage(`{"modelName":"test-model"}`)), handle)
+		require.NoError(t, err)
+		handle.AddPlugin("render-tp", customTP)
+		addPrecise(t, handle)
+		err = validateHandle(handle)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), `producer attribute "backend"="estimate" does not match required "vllm"`)
+	})
 }
 
 // A null kvEventsConfig resets the seeded defaults to a nil pointer; the

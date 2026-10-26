@@ -722,6 +722,37 @@ the sidecar's outbound connections to the encode, prefill and decode stages.
 | `--tls-insecure-skip-verify` | — | `prefiller`, `decoder`, `encoder` (comma-separated or repeated) | none | Skip TLS certificate verification for the specified stages. Example: `--tls-insecure-skip-verify=prefiller` |
 | `--enable-prefiller-sampling` | `ENABLE_PREFILLER_SAMPLING` | `true` / `false` | `false` | If true, the prefill instance is selected randomly from the provided prefill host values. |
 | `--enable-ssrf-protection` | — | `true` / `false` | `false` | Enable SSRF protection using InferencePool allowlisting. See [SSRF Protection](#ssrf-protection). |
+| `--tracing` | — | `true` / `false` | `false` | Enable OpenTelemetry tracing. See [Sidecar Tracing](#sidecar-tracing). |
+| `--enable-tool-calling-telemetry` | — | `true` / `false` | `false` | Observe tool-calling request fields. Traces and the metrics listener are configured separately. |
+| `--metrics-port` | — | port | `0` (disabled) | Serve Prometheus `/metrics` on this port. See [P/D sidecar metrics](metrics.md#pd-sidecar). |
+
+### Sidecar Tracing
+
+With `--tracing`, the sidecar exports spans under the service name `llm-d-disagg-sidecar`. It
+continues the W3C trace context of the incoming request and propagates it on its outbound requests
+to the model servers, so EPP, sidecar, and model server spans share one trace when the model server
+also exports traces.
+
+The sidecar's spans carry the same `llm_d.epp.fairness.id` and `llm_d.epp.fairness.source` as the
+EPP request spans. On sampled traces the EPP sends the pair in `x-llm-d-epp-fairness-id` and
+`x-llm-d-epp-fairness-source`, replacing any client copy; otherwise it removes client copies. The
+sidecar reads both before opening its server span and removes them before forwarding, so the model
+server never sees them. A missing, partial, or unrecognised pair is recorded as `default-flow` with
+source `default`. The headers record where the EPP resolved the identity, not who sent the request:
+keep the sidecar reachable only through the EPP, since a caller that bypasses it can set them. When
+the EPP routes straight to a model server without a sidecar, the model server receives the pair on
+sampled traces.
+
+The exporter is configured with the standard OpenTelemetry environment variables:
+
+| Env var | Default | Description |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Plaintext `localhost:4317` (gRPC) or `localhost:4318` (HTTP) | Collector endpoint. The loopback default applies only when no endpoint, insecure, or certificate variable is set. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | `grpc` or `http/protobuf`. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | `otlp`, `console` (pretty-printed spans on stdout), or `none`. |
+| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, or `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | Sampling ratio in `[0, 1]` for the `traceidratio` samplers. |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | — | Override the service name and add resource attributes such as `k8s.pod.name`. |
 
 ### SSRF Protection
 

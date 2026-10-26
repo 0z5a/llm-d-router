@@ -39,17 +39,14 @@ import (
 	tlsutil "github.com/llm-d/llm-d-router/internal/tls"
 	"github.com/llm-d/llm-d-router/pkg/common"
 	"github.com/llm-d/llm-d-router/pkg/common/observability/logging"
+	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 )
 
+const logBodyBytesKey = "bodyBytes"
+
 // startHTTP starts the HTTP reverse proxy.
 func (s *Server) startHTTP(ctx context.Context) error {
-	// Start SSRF protection validator
-	if err := s.allowlistValidator.Start(ctx); err != nil {
-		s.logger.Error(err, "Failed to start allowlist validator")
-		return err
-	}
-
 	ln := s.HTTPListener
 	var err error
 	if ln == nil {
@@ -63,7 +60,8 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	close(s.readyCh)
 
 	// Wrap handler with OpenTelemetry middleware to extract trace context from incoming requests
-	handler := otelhttp.NewHandler(s.handler, "llm-d-pd-proxy",
+	// The attribution handoff wraps it so every route's server span carries EPP's fairness identity.
+	handler := tracing.WithAttributionHandoff(otelhttp.NewHandler(s.handler, "llm-d-pd-proxy",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			path := ""
 			if r.URL != nil {
@@ -71,7 +69,7 @@ func (s *Server) startHTTP(ctx context.Context) error {
 			}
 			return r.Method + " " + path
 		}),
-	)
+	))
 
 	server := &http.Server{
 		Handler: handler,
@@ -134,9 +132,6 @@ func (s *Server) startHTTP(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		s.logger.Info("shutting down")
-
-		// Stop allowlist validator
-		s.allowlistValidator.Stop()
 
 		ctx, cancelFn := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 		defer cancelFn()
@@ -218,6 +213,8 @@ var inspectedRequestFields = map[string]struct{}{
 	reqcommon.FieldSamplingParams:       {},
 	reqcommon.FieldStream:               {},
 	reqcommon.FieldStreamOptions:        {},
+	reqcommon.FieldEcho:                 {},
+	requestFieldN:                       {},
 	reqcommon.FieldCacheHitThreshold:    {},
 	reqcommon.FieldContinueFinalMessage: {},
 	reqcommon.FieldAddGenerationPrompt:  {},
@@ -271,20 +268,16 @@ func decodeRequestBody(raw []byte) (map[string]any, error) {
 func (s *Server) readJSONBody(r *http.Request, w http.ResponseWriter) ([]byte, map[string]any, bool) {
 	raw, parsed, err := bodyAsJSON(r)
 	if err != nil {
-		s.logger.V(logging.DEBUG).Info("invalid request body", "error", err)
+		s.logger.V(logging.DEBUG).Info("invalid request body", "error", jsonErrorForLog(err))
 		if writeErr := errorJSONInvalid(err, w); writeErr != nil {
 			s.logger.Error(writeErr, "failed to send error response to client")
 		}
 		return nil, nil, false
 	}
-	// createRoutes registers one route per path in DetectAPIType's mapping and
-	// derives each route's apiType from the same call, so a path added to that
-	// list is guarded here without a second edit. Those paths are the API
-	// surface the router serves, and coverage stops there: a request on any
-	// other path, including PathResponses with a trailing slash or an extra
-	// segment, reaches the decoder proxy through the catch-all and its body is
-	// never read. Guarding those would put a body read on the catch-all, which
-	// serves every unrouted path for every API.
+	// createRoutes registers exact POST routes with and without a trailing slash
+	// for each inference path and derives apiType from DetectAPIType. The decoder
+	// catch-all handles extra segments and unrelated paths without reading their
+	// bodies, so those requests bypass this guard.
 	if reqcommon.DetectAPIType(r.URL.Path) == reqcommon.APITypeResponses {
 		if err := reqcommon.RejectStatefulResponsesFields(parsed); err != nil {
 			s.logger.Info("rejecting unsupported responses field", "error", err, "path", r.URL.Path)

@@ -186,8 +186,9 @@ func createTestInferenceRequestWithBody(reqID string, ttftSLO, tpotSLO float64, 
 	}
 
 	return &fwksched.InferenceRequest{
-		Headers: headers,
-		Body:    body,
+		RequestID: reqID,
+		Headers:   headers,
+		Body:      body,
 	}
 }
 
@@ -473,6 +474,7 @@ func TestSloContextStoreEviction(t *testing.T) {
 	endpointName := types.NamespacedName{Name: "test-model", Namespace: "default"}
 
 	req := &fwksched.InferenceRequest{
+		RequestID: requestID,
 		Headers: map[string]string{
 			reqcommon.RequestIDHeaderKey: requestID,
 		},
@@ -609,4 +611,40 @@ func TestPredictedLatency_DumpState(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestParseSLOHeadersRejectsNonFiniteValues(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf", "-Inf", "Infinity"} {
+		t.Run(value, func(t *testing.T) {
+			req := &fwksched.InferenceRequest{Headers: map[string]string{
+				TTFTSLOHeaderKey: value, TPOTSLOHeaderKey: value,
+			}}
+			state := &predictedLatencyCtx{}
+			pl := &PredictedLatency{}
+			pl.parseSLOHeaders(context.Background(), req, state)
+			assert.Zero(t, state.ttftSLO)
+			assert.Zero(t, state.avgTPOTSLO)
+			pl.config.StreamingMode = true
+			pl.config.SLOBufferFactor = 1
+			_, _, _, headroom, ttftHeadroom := pl.validatePrediction(&latencypredictor.PredictionResponse{TTFT: 1, TPOT: 1}, state, 0)
+			assert.False(t, math.IsNaN(headroom) || math.IsInf(headroom, 0))
+			assert.False(t, math.IsNaN(ttftHeadroom) || math.IsInf(ttftHeadroom, 0))
+		})
+	}
+}
+
+func TestParseFloatHeaderFiniteValues(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  float64
+	}{
+		{"0", 0}, {"12.5", 12.5}, {"1e3", 1000}, {"-1", -1},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			req := fwksched.InferenceRequest{Headers: map[string]string{TTFTSLOHeaderKey: tc.value}}
+			got, err := parseFloatHeader(req, TTFTSLOHeaderKey)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

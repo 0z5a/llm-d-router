@@ -21,6 +21,7 @@ import (
 	compbasemetrics "k8s.io/component-base/metrics"
 
 	metricsutil "github.com/llm-d/llm-d-router/pkg/common/observability/metrics"
+	"github.com/llm-d/llm-d-router/pkg/common/observability/toolcalling"
 )
 
 const (
@@ -149,30 +150,9 @@ var (
 		modelLabelsWithFairnessPriorityStreaming,
 	)
 
-	llmdRequestTPOT = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Subsystem: LLMDRouterEndpointPickerSubsystem,
-			Name:      "request_streaming_tpot_seconds",
-			Help:      metricsutil.HelpMsgWithStability("Average time per output token in seconds for streaming requests, computed as (e2e - TTFT) / (output_tokens - 1).", compbasemetrics.ALPHA),
-			Buckets: []float64{
-				0.0005, 0.00205, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.125, 0.15, 0.2,
-				0.3, 0.4, 0.5, 0.6, 0.8, 1, 2,
-			},
-		},
-		modelLabelsWithFairnessPriority,
-	)
+	llmdRequestTPOT = newRequestTPOTHistogram(DefaultRequestTPOTBuckets)
 
-	llmdInterTokenLatency = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Subsystem: LLMDRouterEndpointPickerSubsystem,
-			Name:      "request_streaming_itl_seconds",
-			Help:      metricsutil.HelpMsgWithStability("Inter-token latency in seconds for streaming requests, measured as the time between consecutive response body chunks.", compbasemetrics.ALPHA),
-			Buckets: []float64{
-				0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1, 2,
-			},
-		},
-		append(append([]string{}, modelLabels...), "fairness_id", "priority"),
-	)
+	llmdInterTokenLatency = newInterTokenLatencyHistogram(DefaultInterTokenLatencyBuckets)
 )
 
 // --- llm-d Inference Pool Metrics ---
@@ -249,7 +229,7 @@ var (
 			Name:      "scheduler_e2e_duration_seconds",
 			Help:      metricsutil.HelpMsgWithStability("End-to-end scheduling latency distribution in seconds.", compbasemetrics.ALPHA),
 			Buckets: []float64{
-				0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1,
+				0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1,
 			},
 		},
 		[]string{},
@@ -262,6 +242,25 @@ var (
 			Help:      metricsutil.HelpMsgWithStability("Total number of scheduling attempts.", compbasemetrics.ALPHA),
 		},
 		append([]string{"status", "target_model_name"}, llmdEndpointLabels...),
+	)
+
+	llmdSchedulerFilterEliminatedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "scheduler_filter_eliminated_total",
+			Help: metricsutil.HelpMsgWithStability("Total number of candidate endpoints removed by scheduling filters, "+
+				"by scheduler profile, plugin type and plugin name.", compbasemetrics.ALPHA),
+		},
+		[]string{"profile", "plugin_type", "plugin_name"},
+	)
+
+	llmdSchedulerFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "scheduler_failures_total",
+			Help:      metricsutil.HelpMsgWithStability("Total number of failed scheduling attempts, by reason.", compbasemetrics.ALPHA),
+		},
+		[]string{"reason"},
 	)
 
 	llmdPluginProcessingLatencies = prometheus.NewHistogramVec(
@@ -570,6 +569,21 @@ var (
 		},
 		[]string{"source_type", "extractor_type"},
 	)
+)
+
+// --- Tool-calling request field integrity metric ---
+var llmdToolCallingFieldStatusTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Subsystem: LLMDRouterEndpointPickerSubsystem,
+		Name:      "tool_calling_field_status_total",
+		Help:      metricsutil.HelpMsgWithStability("Tool-calling request field outcomes by component, direction, field, and status.", compbasemetrics.ALPHA),
+	},
+	[]string{
+		toolcalling.MetricLabelComponent,
+		toolcalling.MetricLabelDirection,
+		toolcalling.MetricLabelField,
+		toolcalling.MetricLabelStatus,
+	},
 )
 
 var (
