@@ -26,6 +26,7 @@ import (
 
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	"github.com/llm-d/llm-d-router/pkg/common/routing"
+	"github.com/llm-d/llm-d-router/pkg/sidecar/constants"
 )
 
 // B1-U04: the two legs of an SGLang shared-frontend P/D request must keep
@@ -75,7 +76,7 @@ var _ = Describe("SGLang shared-frontend rank contract (B1-U04)", func() {
 	var testInfo *sidecarTestInfo
 
 	BeforeEach(func() {
-		testInfo = sidecarConnectionTestSetup(KVConnectorSGLang)
+		testInfo = sidecarConnectionTestSetup(constants.KVConnectorSGLang)
 		go func() {
 			defer GinkgoRecover()
 			testInfo.proxy.allowlistValidator = &AllowlistValidator{enabled: false}

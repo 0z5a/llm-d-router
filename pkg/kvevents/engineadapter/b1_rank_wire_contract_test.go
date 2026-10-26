@@ -44,7 +44,7 @@ func TestSGLangParseMessage_DistinguishesRankPresence(t *testing.T) {
 	adapter := NewSGLangAdapter()
 
 	// Minimal SGLang BlockStored: [tag, block_hashes, parent, tokens, block_size].
-	stored := []any{"BlockStored", []any{uint64(7)}, uint64(0), []any{1, 2, 3, 4}, 4}
+	stored := []any{"BlockStored", []any{uint64(7)}, uint64(0), []any{1, 2, 3, 4}, 4, nil, "GPU"}
 
 	cases := []struct {
 		name     string
@@ -108,7 +108,7 @@ func TestSGLangParseMessage_DistinguishesRankPresence(t *testing.T) {
 // as a rank-less publisher would both be silent misattribution.
 func TestSGLangParseMessage_TruncatedBatchIsRejected(t *testing.T) {
 	adapter := NewSGLangAdapter()
-	stored := []any{"BlockStored", []any{uint64(7)}, uint64(0), []any{1, 2, 3, 4}, 4}
+	stored := []any{"BlockStored", []any{uint64(7)}, uint64(0), []any{1, 2, 3, 4}, 4, nil, "GPU"}
 
 	payload, err := msgpack.Marshal([]any{1.0, []any{stored}})
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestSGLangParseMessage_TruncatedBatchIsRejected(t *testing.T) {
 func TestVLLMParseMessage_DistinguishesRankPresence(t *testing.T) {
 	adapter := NewVLLMAdapter()
 
-	stored := []any{"BlockStored", []any{uint64(7)}, uint64(0), []any{1, 2, 3, 4}, 4}
+	stored := []any{"BlockStored", []any{uint64(7)}, uint64(0), []any{1, 2, 3, 4}, 4, nil, "GPU"}
 	for _, tc := range []struct {
 		name     string
 		batch    []any
