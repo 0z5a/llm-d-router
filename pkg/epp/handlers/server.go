@@ -179,6 +179,10 @@ type RequestContext struct {
 	responseStatusCode         string
 	requestRunning             bool
 
+	// sseLineCarry is the partial last SSE line of the previous response chunk.
+	sseLineCarry      []byte
+	sseLineDiscarding bool
+
 	toolCallingSurface             reqcommon.APIType
 	toolCallingRequest             bool
 	toolCallingResponseEventStream bool
@@ -721,8 +725,7 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 				if (header.Key == reqcommon.PseudoHeaderStatus || header.Key == reqcommon.HeaderStatus) && string(header.RawValue) != "200" {
 					reqCtx.responseStatusCode = errcommon.ModelServerError
 				} else if header.Key == reqcommon.HeaderContentType {
-					mediaType, _, _ := strings.Cut(envoy.GetHeaderValue(header), ";")
-					if !strings.EqualFold(strings.TrimSpace(mediaType), fwkrequest.MediaTypeEventStream) {
+					if !isEventStream(envoy.GetHeaderValue(header)) {
 						continue
 					}
 					reqCtx.modelServerStreaming = true
