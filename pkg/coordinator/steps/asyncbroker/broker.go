@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,6 +56,12 @@ type asyncSubmitter interface {
 
 // waitPollInterval is the poll cadence when the multiplexed wake-up is
 // unavailable (Redis without keyspace notifications, or wakeup_mode: poll).
+// maxTimeoutSeconds is the largest timeout that fits in a time.Duration without
+// overflowing. Enqueue mode sets no MaxSeconds, so a client value above this
+// would wrap to a negative or tiny deadline that the producer rejects as a
+// transport failure.
+const maxTimeoutSeconds = int64(math.MaxInt64) / int64(time.Second)
+
 const waitPollInterval = 200 * time.Millisecond
 
 // waitBackupPollInterval is the slow safety poll under the notify wake-up:
@@ -238,6 +245,9 @@ func (s *Step) serveQueued(ctx context.Context, reqCtx *pipeline.RequestContext,
 	}
 	if bounds.MaxSeconds > 0 && timeoutSecs > bounds.MaxSeconds {
 		timeoutSecs = bounds.MaxSeconds
+	}
+	if timeoutSecs > maxTimeoutSeconds {
+		timeoutSecs = maxTimeoutSeconds
 	}
 	timeout := time.Duration(timeoutSecs) * time.Second
 
