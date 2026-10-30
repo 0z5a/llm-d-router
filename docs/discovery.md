@@ -664,10 +664,11 @@ func (d *MyDiscovery) Start(ctx context.Context, notifier fwkdl.DiscoveryNotifie
 }
 ```
 
-Register the factory in the runner before calling `Run`:
+Register the factory in the runner before calling `Run` (see
+[Registering out-of-tree plugins](plugins-vs-builtins.md#registering-out-of-tree-plugins)):
 
 ```go
-fwkplugin.Register(myplugin.PluginType, myplugin.Factory)
+fwkplugin.Register(myplugin.PluginType, fwkplugin.StabilityAlpha, myplugin.Factory)
 ```
 
 Then reference it in the EPP config:
