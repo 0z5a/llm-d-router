@@ -35,6 +35,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	attrmetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/metrics"
 	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 	extractormetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/extractor/metrics"
 	sourcenotifications "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/notifications"
@@ -180,8 +181,7 @@ func (p *Plugin) Consumes() plugin.DataDependencies {
 		p.prefixMatchInfoDataKey: attrprefix.PrefixCacheMatchInfo{},
 	}
 	if p.maxWaitingRequests > 0 {
-		required[plugin.NewDataKey(extractormetrics.WaitingQueueSizeKey,
-			extractormetrics.MetricsExtractorType)] = int(0)
+		required[attrmetrics.ScalarMetricDataKey(extractormetrics.WaitingQueueSizeKey)] = attrmetrics.ScalarMetricValue(0)
 	}
 	return plugin.DataDependencies{Required: required}
 }
