@@ -54,6 +54,9 @@ const (
 	// Requests are multipart/form-data.
 	imagesEditsAPI = "images/edits"
 	audioSpeechAPI = "audio/speech"
+	// audioGenerateAPI is the vLLM Omni text-to-audio generation endpoint (e.g.
+	// Stable Audio), distinct from audioSpeechAPI's text-to-speech.
+	audioGenerateAPI = "audio/generate"
 
 	octetStreamType = "application/octet-stream"
 
@@ -106,6 +109,7 @@ func (p *OpenAIParser) Claims() fwkrh.Claims {
 			imagesEditsAPI,
 			audioSpeechAPI,
 			request.DecisionsPathSuffix,
+			audioGenerateAPI,
 		},
 		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},
 	}
@@ -358,6 +362,9 @@ func determineAPITypeFromPath(path string) string {
 	if request.MatchPathSuffix(path, "/images/edits") {
 		return imagesEditsAPI
 	}
+	if request.MatchPathSuffix(path, "/audio/generate") {
+		return audioGenerateAPI
+	}
 	if request.MatchPathSuffix(path, "/audio/speech") {
 		return audioSpeechAPI
 	}
@@ -408,6 +415,21 @@ func extractRequestBody(apiType string, rawBody []byte) (*fwkrh.InferenceRequest
 		}
 		return &fwkrh.InferenceRequestBody{
 			TextToSpeech: &fwkrh.TextToSpeechRequest{Input: *speechRequest.Input},
+		}, nil
+
+	case audioGenerateAPI:
+		var generateRequest struct {
+			Input          *string `json:"input"`
+			NegativePrompt string  `json:"negative_prompt,omitempty"`
+		}
+		if err := json.Unmarshal(rawBody, &generateRequest); err != nil {
+			return nil, requestBodyDecodeError(err, errors.New("invalid audio generate request: input and negative_prompt must be strings"))
+		}
+		if generateRequest.Input == nil {
+			return nil, errors.New("invalid audio generate request: must have string input field")
+		}
+		return &fwkrh.InferenceRequestBody{
+			AudioGenerate: &fwkrh.AudioGenerateRequest{Input: *generateRequest.Input, NegativePrompt: generateRequest.NegativePrompt},
 		}, nil
 
 	case chatCompletionsAPI:

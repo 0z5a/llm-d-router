@@ -1064,6 +1064,94 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name:    "audio generate request body",
+			headers: map[string]string{":path": "/v1/audio/generate"},
+			body: map[string]any{
+				"model":           "stabilityai/stable-audio-open-1.0",
+				"input":           "a dog barking in the rain",
+				"audio_length":    5.0,
+				"response_format": "wav",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				AudioGenerate: &fwkrh.AudioGenerateRequest{
+					Input: "a dog barking in the rain",
+				},
+				Payload: fwkrh.PayloadMap{
+					"model":           "stabilityai/stable-audio-open-1.0",
+					"input":           "a dog barking in the rain",
+					"audio_length":    json.Number("5"),
+					"response_format": "wav",
+				},
+			},
+		},
+		{
+			name:    "audio generate request with stream_format is not treated as streaming",
+			headers: map[string]string{":path": "/v1/audio/generate"},
+			body: map[string]any{
+				"model":         "stabilityai/stable-audio-open-1.0",
+				"input":         "a dog barking in the rain",
+				"stream_format": "audio",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				AudioGenerate: &fwkrh.AudioGenerateRequest{
+					Input: "a dog barking in the rain",
+				},
+				Payload: fwkrh.PayloadMap{
+					"model":         "stabilityai/stable-audio-open-1.0",
+					"input":         "a dog barking in the rain",
+					"stream_format": "audio",
+				},
+				Stream: false,
+			},
+		},
+		{
+			name:    "audio generate request missing input",
+			headers: map[string]string{":path": "/v1/audio/generate"},
+			body: map[string]any{
+				"model": "test",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "audio generate request with non-string input",
+			headers: map[string]string{":path": "/v1/audio/generate"},
+			body: map[string]any{
+				"model": "test",
+				"input": []any{"not", "supported"},
+			},
+			wantErr: true,
+		},
+		{
+			name:    "audio generate request with negative prompt",
+			headers: map[string]string{":path": "/v1/audio/generate"},
+			body: map[string]any{
+				"model":           "stabilityai/stable-audio-open-1.0",
+				"input":           "a dog barking in the rain",
+				"negative_prompt": "silence",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				AudioGenerate: &fwkrh.AudioGenerateRequest{
+					Input:          "a dog barking in the rain",
+					NegativePrompt: "silence",
+				},
+				Payload: fwkrh.PayloadMap{
+					"model":           "stabilityai/stable-audio-open-1.0",
+					"input":           "a dog barking in the rain",
+					"negative_prompt": "silence",
+				},
+			},
+		},
+		{
+			name:    "audio generate request with non-string negative prompt",
+			headers: map[string]string{":path": "/v1/audio/generate"},
+			body: map[string]any{
+				"model":           "test",
+				"input":           "hello",
+				"negative_prompt": 42,
+			},
+			wantErr: true,
+		},
 		// Path-based detection tests
 		{
 			name:    "conversations API via path",
@@ -2121,6 +2209,7 @@ func TestOpenAIParser_Claims(t *testing.T) {
 			imagesEditsAPI,
 			audioSpeechAPI,
 			request.DecisionsPathSuffix,
+			audioGenerateAPI,
 		},
 		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},
 	}

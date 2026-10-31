@@ -83,7 +83,8 @@ func (RawPayload) AsMap() (PayloadMap, bool) { return nil, false }
 // InferenceRequestBody contains the request-body fields that we parse out as user input,
 // to be used in forming scheduling decisions.
 // An InferenceRequestBody must contain exactly one of CompletionsRequest, ChatCompletionsRequest, ResponsesRequest,
-// TextToSpeechRequest, ConversationsRequest, EmbeddingsRequest, GenerateRequest, ImagesGenerationsRequest, or MessagesRequest.
+// TextToSpeechRequest, AudioGenerateRequest, ConversationsRequest, EmbeddingsRequest, GenerateRequest,
+// ImagesGenerationsRequest, or MessagesRequest.
 type InferenceRequestBody struct {
 	// CompletionsRequest is the representation of the OpenAI /v1/completions request body.
 	Completions *CompletionsRequest `json:"completions,omitempty"`
@@ -95,6 +96,8 @@ type InferenceRequestBody struct {
 	Responses *ResponsesRequest `json:"responses,omitempty"`
 	// TextToSpeechRequest is the representation of the OpenAI /v1/audio/speech request body.
 	TextToSpeech *TextToSpeechRequest `json:"text_to_speech,omitempty"`
+	// AudioGenerateRequest is the representation of the vLLM Omni /v1/audio/generate request body.
+	AudioGenerate *AudioGenerateRequest `json:"audio_generate,omitempty"`
 	// ConversationsRequest is the representation of the OpenAI /v1/conversations request body.
 	Conversations *ConversationsRequest `json:"conversations,omitempty"`
 	// EmbeddingsRequest is the representation of the OpenAI /v1/embeddings request body.
@@ -481,6 +484,24 @@ func (r *TextToSpeechRequest) String() string {
 		return nilStr
 	}
 	return fmt.Sprintf("{InputLength: %d}", len(r.Input))
+}
+
+// AudioGenerateRequest represents the fields parsed from a vLLM Omni
+// /v1/audio/generate request: text-to-audio generation (e.g. Stable Audio),
+// distinct from /v1/audio/speech's text-to-speech.
+type AudioGenerateRequest struct {
+	// Input is the text prompt describing the audio to generate.
+	Input string `json:"input"`
+	// NegativePrompt describes what to avoid in the generated audio and is
+	// encoded alongside Input for classifier-free guidance.
+	NegativePrompt string `json:"negative_prompt,omitempty"`
+}
+
+func (r *AudioGenerateRequest) String() string {
+	if r == nil {
+		return nilStr
+	}
+	return fmt.Sprintf("{InputLength: %d, NegativePromptLength: %d}", len(r.Input), len(r.NegativePrompt))
 }
 
 // ConversationsRequest represents the OpenAI /v1/conversations request body structure
