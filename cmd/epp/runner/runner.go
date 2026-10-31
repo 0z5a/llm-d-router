@@ -472,6 +472,7 @@ func (r *Runner) setup(ctx, servingCtx context.Context, cfg *rest.Config, opts *
 	metricsutil.SetFairnessIDLabelLimit(opts.FairnessIDMetricLabelLimit)
 	r.customCollectors = append(r.customCollectors, collectors.NewInferencePoolMetricsCollector(ds))
 	metrics.RegisterWithOptions(metricsRegisterOptions(rawConfig), r.customCollectors...)
+	metrics.InitFairnessIDResolutionMetrics(gknn.Name)
 	metrics.RecordInferenceExtensionInfo(version.CommitSHA, version.BuildRef)
 	// Register metrics handler.
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
@@ -547,7 +548,7 @@ func (r *Runner) setup(ctx, servingCtx context.Context, cfg *rest.Config, opts *
 		requestcontrol.WithDisableEndpointSubsetFilter(opts.DisableEndpointSubsetFilter)))
 	endpointCandidates, admissionController, priorityBandControlPlane, requestEvictor := r.initAdmissionControl(servingCtx, opts, eppConfig, endpointCandidates)
 
-	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig)
+	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig, gknn.Name)
 	if requestEvictor != nil {
 		director.SetRequestEvictor(requestEvictor)
 	}
@@ -1308,7 +1309,7 @@ func (r *Runner) runWithFileDiscovery(ctx context.Context, opts *runserver.Optio
 	// bands are provisioned here, before the server starts serving.
 	endpointCandidates, admissionController, bandControlPlane, requestEvictor := r.initAdmissionControl(r.servingCtx, opts, eppConfig, endpointCandidates)
 	provisionObjectiveBands(bandControlPlane, objectivePriorities)
-	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig)
+	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig, poolName)
 	if requestEvictor != nil {
 		director.SetRequestEvictor(requestEvictor)
 	}
@@ -1329,6 +1330,7 @@ func (r *Runner) runWithFileDiscovery(ctx context.Context, opts *runserver.Optio
 
 	r.customCollectors = append(r.customCollectors, collectors.NewInferencePoolMetricsCollector(ds))
 	metrics.RegisterWithOptions(metricsRegisterOptions(rawConfig), r.customCollectors...)
+	metrics.InitFairnessIDResolutionMetrics(poolName)
 	metrics.RecordInferenceExtensionInfo(version.CommitSHA, version.BuildRef)
 
 	setupLog.Info("EPP starting (file discovery mode)",
