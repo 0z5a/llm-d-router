@@ -224,6 +224,21 @@ func (s *Server) runChunkedDecodeFromMap(w http.ResponseWriter, r *http.Request,
 		chunkReq[reqcommon.FieldStream] = false
 		delete(chunkReq, reqcommon.FieldStreamOptions)
 
+		// Carry over only the minimum still owed for this chunk; the cloned
+		// min_tokens would otherwise exceed the lowered per-chunk max_tokens.
+		// Once the floor has been met, drop it so a later chunk is not forced
+		// to suppress EOS and does not get min_tokens > max_tokens.
+		// An invalid client value is forwarded unchanged so the first chunk
+		// fails with the same 400 as an unchunked request.
+		if minTokens, ok := toInt(body[reqcommon.FieldMinTokens]); ok &&
+			minTokens >= 0 && (originalMaxTokens < 0 || minTokens <= originalMaxTokens) {
+			if remainingMin := minTokens - totalTokens; remainingMin > 0 {
+				chunkReq[reqcommon.FieldMinTokens] = min(remainingMin, chunkBudget)
+			} else {
+				delete(chunkReq, reqcommon.FieldMinTokens)
+			}
+		}
+
 		// From the second chunk onward: remove KV transfer params and instruct
 		// to continue the last assistant message rather than start a new one.
 		if chunkIndex > 0 {
